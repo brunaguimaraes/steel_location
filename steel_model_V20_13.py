@@ -89,8 +89,34 @@ CCS_ALLOWED_STATES = set(SUDESTE_STATES)
 # Natural gas (route "DR-NG"): Southeast + Northeast states only.
 GN_ALLOWED_STATES = SUDESTE_STATES | NORDESTE_STATES
 
-# Green hydrogen (route "DR-H2"): Northeast states only.
-H2_ALLOWED_STATES = set(NORDESTE_STATES)
+# Green hydrogen (route "DR-H2"): allowed only in states with an announced
+# low-carbon H2 hub. Two-tier evidence base (frozen 07/2026):
+#
+# Tier 1 — Official (MME/PNH2 public call for H2 hubs):
+#   1st phase result, Dec/2024: 12 projects classified, incl. the ports of
+#   Suape (PE) and Acu (RJ) and CSN's hub;
+#   CIF-ID prioritisation, Aug/2025: CSN "H2Orizonte Verde" (RJ, green
+#   steel), Neoenergia Camacari (BA), Copel "B2H2" (PR), Atlas Agro
+#   Uberaba (MG), Cemig H2/ammonia (MG).
+#   Source: gov.br/mme, PNH2 — Chamada Publica de Hubs de H2.
+#
+## MG included on Tier-1 grounds (two MME-prioritised hubs), though both are
+# fertiliser-oriented — remove from the set if a stricter steel-only
+# criterion is preferred.
+#
+#or
+#
+# Tier 2 — Port hub announcements with steelmaking relevance:
+#   Pecem (CE): H2V hub with pre-contracts; ArcelorMittal Pecem on site.
+#   Tubarao (ES): ArcelorMittal Tubarao + EDP MoU (pilot plant).
+#   Rio Grande (RS): state programme; ICCT port-hub assessment.
+#   Itaqui (MA), Parnaiba (PI), RN: CNI survey / SENAI-RN study.
+#
+#TIER 2
+
+H2_ALLOWED_STATES = {"CE", "PE", "RN", "PI", "MA",   # Nordeste
+                     "RJ", "ES",                     # Sudeste
+                     "RS"}                           # Sul
 
 # Routes that carry a geographic availability restriction for NEW capacity.
 # Maps route name (post-sanitization, i.e. spaces -> "_") to its allowed-state set.
@@ -238,6 +264,17 @@ def _sanitize_spaces(cfg: dict) -> dict:
     cfg["fuels_by_route"] = {fix(r): [fix(f) for f in fs] for r, fs in cfg["fuels_by_route"].items()}
     cfg["prices"] = {(fix(f), y): v for (f, y), v in cfg["prices"].items()}
     cfg["prices_state"] = {(fix(f), s): v for (f, s), v in cfg.get("prices_state", {}).items()}
+
+# ---------------------------------------------------------------------
+# BLOCK 2 of 3 â€” paste inside _sanitize_spaces()
+# WHERE: one line, right after the line that sanitizes prices_state:
+#   cfg["prices_state"] = {(fix(f), s): v for (f, s), v in cfg.get("prices_state", {}).items()}
+# (route names in Ore_Cost_State have spaces, e.g. "BF-BOF MC", and
+# must become "BF-BOF_MC" like everywhere else in the model)
+# ---------------------------------------------------------------------
+
+    cfg["ore_delta"] = {(fix(r), s): v for (r, s), v in cfg.get("ore_delta", {}).items()}    
+    
     cfg["ef"] = {fix(k): v for k, v in cfg["ef"].items()}
     return cfg
 
@@ -330,6 +367,36 @@ def load_config(path: str) -> dict:
               "electricity/natural gas will use the national fixed price "
               "for every state.")
         cfg["prices_state"] = {}
+
+
+# ---------------------------------------------------------------------
+# BLOCK 1 of 3 â€” paste inside load_config()
+# WHERE: right after the Fuel_Prices_State try/except ends, i.e. after
+# the line:      cfg["prices_state"] = {}
+# and BEFORE the comment "# ---- Candidate states for GREENFIELD"
+# ---------------------------------------------------------------------
+
+    # ---- Ore/pellet state differential (NEW, V20_13) â€” optional sheet.
+    # Sheet "Ore_Cost_State": columns Route, State, Extra_cost_USD_per_t.
+    # Values are DELTAS (can be negative) vs. the route family anchor
+    # (MG for common ore, ES for DR-grade pellet); the absolute ore cost
+    # remains embedded in route OPEX. Routes absent from the sheet
+    # (e.g. EAF) carry no ore term.
+    try:
+        df_ore = pd.read_excel(path, sheet_name="Ore_Cost_State")
+        df_ore.columns = [c.strip() for c in df_ore.columns]
+        cfg["ore_delta"] = {
+            (str(row["Route"]).strip(), str(row["State"]).strip().upper()):
+                float(row["Extra_cost_USD_per_t"])
+            for _, row in df_ore.iterrows()
+            if pd.notna(row["Extra_cost_USD_per_t"])
+        }
+    except ValueError:
+        print("    [warn] Sheet 'Ore_Cost_State' not found â€” "
+              "ore/pellet cost carries no state differential.")
+        cfg["ore_delta"] = {}
+
+
 
     # ---- Candidate states for GREENFIELD (NEW, V20_12) — optional sheet.
     # Sheet "Greenfield_States": single column "UF". If absent, the
@@ -444,7 +511,7 @@ def compute_route_emission_factor(cfg: dict) -> dict:
 # Fuels whose price is state-dependent (NEW, V20_12). Any fuel in this set
 # will look up cfg["prices_state"][(fuel, state)] first, falling back to the
 # national cfg["prices"][(fuel, year)] price if the state isn't in the sheet.
-STATE_PRICED_FUELS = {"Eletricidade", "Gas_natural"}
+STATE_PRICED_FUELS = {"Eletricidade", "Gas_natural", "Carvao_mineral", "Oleo_diesel", "Hidrogenio"}
 
 
 def compute_route_fuel_cost_state(cfg: dict, state: str) -> dict:
@@ -471,6 +538,18 @@ def compute_route_fuel_cost_state(cfg: dict, state: str) -> dict:
                 else:
                     price = cfg["prices"].get((f, y), 0.0)
                 total += cfg["ei"].get((r, f), 0.0) * price
+# ---------------------------------------------------------------------
+# BLOCK 3 of 3 â€” paste inside compute_route_fuel_cost_state()
+# WHERE: inside the year loop, right after the "for f in ..." fuel loop
+# finishes, and BEFORE the line:      cost[(r, y)] = total
+# (i.e. the new line sits at the same indentation as "total += ..."
+# inside the fuel loop MINUS one level â€” same level as cost[(r, y)])
+# ---------------------------------------------------------------------
+
+            # NEW V20_13: ore/pellet state differential (USD/t of steel),
+            # no year dimension. Zero when route/state absent from sheet.
+            total += cfg.get("ore_delta", {}).get((r, state), 0.0)
+            
             cost[(r, y)] = total
     return cost
 
@@ -2033,7 +2112,7 @@ if __name__ == "__main__":
     main()
     
     
-    #%%
+
 # ============================================================================
 # PLOT 10 — TOTAL PRODUCTION BY STATE (full fleet)                      [NEW]
 # ============================================================================
