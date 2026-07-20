@@ -57,7 +57,7 @@ BASE_DIR = r"C:/Users/Bruna/OneDrive/DOUTORADO/0.TESE/modelagem/steel_location_m
 
 
 PLANTS_FILE  = os.path.join(BASE_DIR, "existing_plants.xlsx")
-CONFIG_FILE  = os.path.join(BASE_DIR, "Model_Config_12.xlsx")
+CONFIG_FILE  = os.path.join(BASE_DIR, "Model_Config_13.xlsx")
 OUTPUT_DIR   = os.path.join(BASE_DIR, "resultados")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
