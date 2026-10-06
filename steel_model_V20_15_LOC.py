@@ -1,38 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Steel Production Optimization Model — V20_12
-=========================================================
-Changes vs V20_11 (NEW — state/location dimension):
-- Every plant (existing, successor, greenfield) now has an associated
-  Brazilian state (UF). Existing plants and successors inherit the UF
-  already present in `existing_plants.xlsx` (column "UF"). Greenfield
-  investments get a NEW decision dimension: the model freely chooses
-  which state to build in, subject to the availability rules below.
-- ALL fuel prices are now FIXED (no year variation) — the "Fuel_Prices"
-  sheet was simplified from year-columns to a single "Price_USD_per_GJ"
-  column per fuel, applied to every year in the horizon.
-- Electricity and Natural gas prices are additionally STATE-DEPENDENT and
-  FIXED (no year variation, no tiered/marginal curve like charcoal) — read
-  from a new "Fuel_Prices_State" sheet in Model_Config (columns: Fuel,
-  State, Price_USD_per_GJ). Any state not listed there falls back to the
-  national fixed price above. Charcoal keeps its own 3-tier national
-  supply curve (state-level charcoal supply is a placeholder for now — see
-  CHARCOAL_SUPPLY_STATE_SHEET note below; not yet enforced).
-- CCS (route BF-BOF-CCS) is only allowed for NEW capacity (successors and
-  greenfield) in the full Sudeste region (São Paulo, Rio de Janeiro, Minas
-  Gerais, Espírito Santo).
-- Natural gas (route DR-NG) is only allowed for NEW capacity in the
-  Southeast + Northeast states (GN_ALLOWED_STATES).
-- Green hydrogen (route DR-H2) is only allowed for NEW capacity in the
-  Northeast states (H2_ALLOWED_STATES).
-- Candidate states for greenfield now default to ALL 27 Brazilian UFs (any
-  route with no explicit restriction may be built in any state). An
-  optional "Greenfield_States" sheet in Model_Config (column "UF") lets you
-  narrow that list down if you'd rather restrict greenfield to a subset.
-
-Everything else is identical to V20_11.
-"""
-
 #==============================================================================
 # 1. IMPORTS AND PATHS
 #==============================================================================
@@ -52,88 +17,58 @@ from amplpy import modules
 modules.install("highs")
 
 # >>> CHANGE ONLY THIS LINE WHEN MOVING TO ANOTHER MACHINE <<<
-# BASE_DIR = r"C:\Users\ottoh\OneDrive\Meus artigos\Steel Decarbonization - States"
-BASE_DIR = r"C:/Users/Bruna/OneDrive/DOUTORADO/0.TESE/modelagem/steel_location_model/steel_location"
+BASE_DIR =  r"C:\Users\ottoh\OneDrive\ARTIGO\submission\Research Data"
+# BASE_DIR = r"C:/Users/Bruna/OneDrive/DOUTORADO/0.TESE/modelagem/modelo_bru"
 
-
-PLANTS_FILE  = os.path.join(BASE_DIR, "existing_plants.xlsx")
-CONFIG_FILE  = os.path.join(BASE_DIR, "Model_Config_14.xlsx")
+PLANTS_FILE  = os.path.join(BASE_DIR, "input/Input_existing_plants.xlsx")
+CONFIG_FILE  = os.path.join(BASE_DIR, "input/Input_Model_Config_12_horizonte_2070.xlsx")
 OUTPUT_DIR   = os.path.join(BASE_DIR, "resultados")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-#==============================================================================
-# 1a. STATE / REGION DEFINITIONS AND AVAILABILITY RULES  (NEW, V20_12)
-#==============================================================================
-# Brazilian regions used to restrict WHERE certain routes/resources can be
-# built. Only affects NEW capacity (successor slots and greenfield) — existing
-# plants keep operating wherever they physically are, regardless of these
-# rules.
-
+# LOC ========================================================================
+# 1a. STATE / REGION DEFINITIONS AND AVAILABILITY RULES  (LOC layer)
+# ============================================================================
+# Brazilian regions used to restrict WHERE certain routes may be built. Only
+# affects NEW capacity (successor slots and greenfield) — existing plants keep
+# operating wherever they physically are.
 SUDESTE_STATES  = {"SP", "RJ", "MG", "ES"}
 NORDESTE_STATES = {"AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"}
 
-# All 27 Brazilian UFs (26 states + Distrito Federal) — used as the default
-# greenfield candidate set so the model can consider the WHOLE country,
-# subject only to the route-specific restrictions below.
+# All 27 Brazilian UFs — default greenfield candidate set.
 ALL_BR_STATES = {
     "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS",
     "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC",
     "SP", "SE", "TO",
 }
 
-# CCS (route "BF-BOF-CCS"): the full Sudeste region (SP, RJ, MG, ES).
+# CCS (BF-BOF-CCS): the full Sudeste region (storage-geology premise).
 CCS_ALLOWED_STATES = set(SUDESTE_STATES)
-
-# Natural gas (route "DR-NG"): Southeast + Northeast states only.
+# Natural gas (DR-NG): Southeast + Northeast.
 GN_ALLOWED_STATES = SUDESTE_STATES | NORDESTE_STATES
-
-# Green hydrogen (route "DR-H2"): allowed only in states with an announced
-# low-carbon H2 hub. Two-tier evidence base (frozen 07/2026):
-#
-# Tier 1 — Official (MME/PNH2 public call for H2 hubs):
-#   1st phase result, Dec/2024: 12 projects classified, incl. the ports of
-#   Suape (PE) and Acu (RJ) and CSN's hub;
-#   CIF-ID prioritisation, Aug/2025: CSN "H2Orizonte Verde" (RJ, green
-#   steel), Neoenergia Camacari (BA), Copel "B2H2" (PR), Atlas Agro
-#   Uberaba (MG), Cemig H2/ammonia (MG).
-#   Source: gov.br/mme, PNH2 — Chamada Publica de Hubs de H2.
-#
-## MG included on Tier-1 grounds (two MME-prioritised hubs), though both are
-# fertiliser-oriented — remove from the set if a stricter steel-only
-# criterion is preferred.
-#
-#or
-#
-# Tier 2 — Port hub announcements with steelmaking relevance:
-#   Pecem (CE): H2V hub with pre-contracts; ArcelorMittal Pecem on site.
-#   Tubarao (ES): ArcelorMittal Tubarao + EDP MoU (pilot plant).
-#   Rio Grande (RS): state programme; ICCT port-hub assessment.
-#   Itaqui (MA), Parnaiba (PI), RN: CNI survey / SENAI-RN study.
-#
-#TIER 2
-
+# Green H2 (DR-H2): announced low-carbon H2 hubs (frozen 07/2026).
 H2_ALLOWED_STATES = {"CE", "PE", "RN", "PI", "MA",   # Nordeste
                      "RJ", "ES",                     # Sudeste
-                     "RS"}                           # Sul
+                     "RS"}                            # Sul
 
-# Routes that carry a geographic availability restriction for NEW capacity.
-# Maps route name (post-sanitization, i.e. spaces -> "_") to its allowed-state set.
+# DR-NG-CCS (LOC decision): needs BOTH gas AND CCS storage, so its allowed
+# set is the intersection = {ES, MG, RJ, SP}. Registered as a methodological
+# premise to revisit with the advisor (the CCS=Sudeste storage assumption is
+# the one most likely to be widened, e.g. to onshore basins such as BA).
+DRNGCCS_ALLOWED_STATES = GN_ALLOWED_STATES & CCS_ALLOWED_STATES
+
+# Route -> allowed-state set for NEW capacity (names post-sanitization).
 ROUTE_STATE_RESTRICTIONS = {
     "BF-BOF-CCS": CCS_ALLOWED_STATES,
     "DR-NG":      GN_ALLOWED_STATES,
     "DR-H2":      H2_ALLOWED_STATES,
-    # Routes not listed here (BF-BOF_MC, BF-BOF_CC, EAF, IBT, ...) have no
-    # geographic restriction and may be built as greenfield in any candidate
-    # state.
+    "DR-NG-CCS":  DRNGCCS_ALLOWED_STATES,   # LOC: gas ∩ CCS = {ES, MG, RJ, SP}
+    # Unlisted routes (BF-BOF_MC, BF-BOF_CC, EAF, IBT) have no restriction.
 }
 
-# Charcoal supply by state: PLACEHOLDER for future work. Otto plans to add
-# a "Charcoal_Supply_State" sheet to Model_Config with per-state supply data;
-# until that is filled in, charcoal keeps its existing NATIONAL 3-tier curve
-# (see section 1b) and is NOT geographically restricted.
-CHARCOAL_SUPPLY_STATE_SHEET = "Charcoal_Supply_State"  # sheet name reserved for later use
+CHARCOAL_SUPPLY_STATE_SHEET = "Charcoal_Supply_State"  # reserved for later use
+# LOC end ====================================================================
 
 
 #==============================================================================
@@ -199,6 +134,7 @@ CHARCOAL_EXTEND_WIDTH_PJ = 1000.0   # only used if CHARCOAL_ABOVE_CAP == "extend
 
 PENETRATION_LIMITS = {
     "BF-BOF-CCS": {"start": 2035, "end": 2050},
+    "DR-NG-CCS": {"start": 2035, "end": 2050},
     "DR-H2":      {"start": 2035, "end": 2050},
     # Example: joint cap on CCS+H2 combined would be:
     # ("BF-BOF-CCS", "DR-H2"): {"start": 2035, "end": 2050},
@@ -221,6 +157,17 @@ FUEL_CATEGORY = {
 }
 
 # ===================================================================
+# CCS ROUTES
+# ===================================================================
+# Every technology route that captures carbon should be listed here.
+# CAPTURE_RATE_CCS (a single scalar from Model_Config.xlsx, Parameters
+# sheet) is applied to ALL routes in this set. If different CCS routes
+# need different capture rates in the future, this should become a
+# per-route dict instead (e.g. read from a new column in the Routes
+# sheet) — flag it if that's needed.
+CCS_ROUTES = {"BF-BOF-CCS", "DR-NG-CCS"}
+
+# ===================================================================
 # COLOR PALETTE — consistent across MIT and REF scenarios
 # Mirrors the matplotlib tab10 default order used in the MIT plots
 # ===================================================================
@@ -232,6 +179,7 @@ ROUTE_COLORS = {
     "DR-NG":       "#9467bd",   # tab:purple
     "EAF":         "#8c564b",   # tab:brown
     "IBT":         "#e377c2",   # tab:pink
+    "DR-NG-CCS":  "#7f7f7f",   # tab:gray (NEW)
 }
 
 FUEL_COLORS = {
@@ -255,7 +203,8 @@ def _sanitize_spaces(cfg: dict) -> dict:
         return s.replace(" ", "_") if isinstance(s, str) else s
 
     cfg["routes"] = [fix(r) for r in cfg["routes"]]
-    cfg["capex"]      = {fix(k): v for k, v in cfg["capex"].items()}
+    cfg["capex_retrofit"]   = {fix(k): v for k, v in cfg["capex_retrofit"].items()}
+    cfg["capex_greenfield"] = {fix(k): v for k, v in cfg["capex_greenfield"].items()}
     cfg["opex_fixed"] = {fix(k): v for k, v in cfg["opex_fixed"].items()}
     cfg["scrap_rate"] = {fix(k): v for k, v in cfg["scrap_rate"].items()}
     cfg["uses_biomass"] = {fix(k): v for k, v in cfg["uses_biomass"].items()}
@@ -263,18 +212,8 @@ def _sanitize_spaces(cfg: dict) -> dict:
     cfg["ei"] = {(fix(r), fix(f)): v for (r, f), v in cfg["ei"].items()}
     cfg["fuels_by_route"] = {fix(r): [fix(f) for f in fs] for r, fs in cfg["fuels_by_route"].items()}
     cfg["prices"] = {(fix(f), y): v for (f, y), v in cfg["prices"].items()}
-    cfg["prices_state"] = {(fix(f), s): v for (f, s), v in cfg.get("prices_state", {}).items()}
-
-# ---------------------------------------------------------------------
-# BLOCK 2 of 3 â€” paste inside _sanitize_spaces()
-# WHERE: one line, right after the line that sanitizes prices_state:
-#   cfg["prices_state"] = {(fix(f), s): v for (f, s), v in cfg.get("prices_state", {}).items()}
-# (route names in Ore_Cost_State have spaces, e.g. "BF-BOF MC", and
-# must become "BF-BOF_MC" like everywhere else in the model)
-# ---------------------------------------------------------------------
-
-    cfg["ore_delta"] = {(fix(r), s): v for (r, s), v in cfg.get("ore_delta", {}).items()}    
-    
+    cfg["prices_state"] = {(fix(f), s): v for (f, s), v in cfg.get("prices_state", {}).items()}  # LOC
+    cfg["ore_delta"]    = {(fix(r), s): v for (r, s), v in cfg.get("ore_delta", {}).items()}      # LOC
     cfg["ef"] = {fix(k): v for k, v in cfg["ef"].items()}
     return cfg
 
@@ -302,7 +241,10 @@ def load_config(path: str) -> dict:
     # ---- Routes
     df_r = pd.read_excel(path, sheet_name="Routes")
     cfg["routes"] = df_r["Route"].tolist()
-    cfg["capex"]      = dict(zip(df_r["Route"], df_r["CAPEX_USD_per_t"]))
+    # CAPEX differentiated by pathway: retrofit (successor slots, cheaper —
+    # reuses site/foundation/utilities) vs greenfield (new plant, pricier).
+    cfg["capex_retrofit"]   = dict(zip(df_r["Route"], df_r["CAPEX_retrofit_USD_per_t"]))
+    cfg["capex_greenfield"] = dict(zip(df_r["Route"], df_r["CAPEX_greenfield_USD_per_t"]))
     cfg["opex_fixed"] = dict(zip(df_r["Route"], df_r["OPEX_fixed_USD_per_t"]))
     cfg["scrap_rate"] = dict(zip(df_r["Route"], df_r["Scrap_rate_t_per_t"]))
     cfg["uses_biomass"] = {
@@ -324,36 +266,18 @@ def load_config(path: str) -> dict:
         for r in cfg["routes"]
     }
 
-    # ---- Fuel prices (NEW, V20_12: FIXED — no year variation)
-    # Sheet "Fuel_Prices" now has just two columns: Fuel, Price_USD_per_GJ.
-    # The same price is applied to every year in the horizon. For backward
-    # compatibility, if the sheet still has the OLD year-column format
-    # (2023, 2024, ...), that is read instead (year-varying).
+    # ---- Fuel prices
     df_pr = pd.read_excel(path, sheet_name="Fuel_Prices")
-    df_pr.columns = [str(c).strip() for c in df_pr.columns]
-    if "Price_USD_per_GJ" in df_pr.columns:
-        # NEW fixed format — one price per fuel, applied to all years.
-        fixed_price = dict(zip(df_pr["Fuel"], df_pr["Price_USD_per_GJ"].astype(float)))
-        cfg["prices"] = {
-            (fuel, year): price
-            for fuel, price in fixed_price.items()
-            for year in cfg["YEARS"]
-        }
-    else:
-        # OLD year-column format (kept for backward compatibility only).
-        df_pr = df_pr.set_index("Fuel")
-        df_pr.columns = [int(c) for c in df_pr.columns]
-        cfg["prices"] = {
-            (fuel, year): float(df_pr.loc[fuel, year])
-            for fuel in df_pr.index
-            for year in df_pr.columns
-        }
+    df_pr = df_pr.set_index("Fuel")
+    df_pr.columns = [int(c) for c in df_pr.columns]
+    cfg["prices"] = {
+        (fuel, year): float(df_pr.loc[fuel, year])
+        for fuel in df_pr.index
+        for year in df_pr.columns
+    }
 
-    # ---- Fuel prices BY STATE (NEW, V20_12) — fixed, no year dimension.
+    # LOC ---- Fuel prices BY STATE (fixed, no year dimension).
     # Sheet "Fuel_Prices_State": columns Fuel, State, Price_USD_per_GJ.
-    # Only Eletricidade and Gas_natural are expected here; any fuel present
-    # in this sheet overrides the national Fuel_Prices price WHEN a
-    # plant/slot/greenfield unit is located in that state.
     try:
         df_pr_state = pd.read_excel(path, sheet_name="Fuel_Prices_State")
         df_pr_state.columns = [c.strip() for c in df_pr_state.columns]
@@ -363,25 +287,12 @@ def load_config(path: str) -> dict:
             for _, row in df_pr_state.iterrows()
         }
     except ValueError:
-        print("    [warn] Sheet 'Fuel_Prices_State' not found — "
-              "electricity/natural gas will use the national fixed price "
-              "for every state.")
+        print("    [warn] Sheet 'Fuel_Prices_State' not found — electricity/"
+              "natural gas will use the national fixed price for every state.")
         cfg["prices_state"] = {}
 
-
-# ---------------------------------------------------------------------
-# BLOCK 1 of 3 â€” paste inside load_config()
-# WHERE: right after the Fuel_Prices_State try/except ends, i.e. after
-# the line:      cfg["prices_state"] = {}
-# and BEFORE the comment "# ---- Candidate states for GREENFIELD"
-# ---------------------------------------------------------------------
-
-    # ---- Ore/pellet state differential (NEW, V20_13) â€” optional sheet.
+    # LOC ---- Ore/pellet state differential (DELTAS vs. route anchor).
     # Sheet "Ore_Cost_State": columns Route, State, Extra_cost_USD_per_t.
-    # Values are DELTAS (can be negative) vs. the route family anchor
-    # (MG for common ore, ES for DR-grade pellet); the absolute ore cost
-    # remains embedded in route OPEX. Routes absent from the sheet
-    # (e.g. EAF) carry no ore term.
     try:
         df_ore = pd.read_excel(path, sheet_name="Ore_Cost_State")
         df_ore.columns = [c.strip() for c in df_ore.columns]
@@ -392,16 +303,13 @@ def load_config(path: str) -> dict:
             if pd.notna(row["Extra_cost_USD_per_t"])
         }
     except ValueError:
-        print("    [warn] Sheet 'Ore_Cost_State' not found â€” "
-              "ore/pellet cost carries no state differential.")
+        print("    [warn] Sheet 'Ore_Cost_State' not found — ore/pellet cost "
+              "carries no state differential.")
         cfg["ore_delta"] = {}
 
-
-
-    # ---- Candidate states for GREENFIELD (NEW, V20_12) — optional sheet.
-    # Sheet "Greenfield_States": single column "UF". If absent, the
-    # candidate set defaults later (in build_model) to the unique UFs
-    # already present in existing_plants.xlsx.
+    # LOC ---- Candidate states for GREENFIELD (optional sheet).
+    # Sheet "Greenfield_States": single column "UF". If absent, build_model
+    # falls back to the unique UFs present among existing plants / all UFs.
     try:
         df_gs = pd.read_excel(path, sheet_name="Greenfield_States")
         df_gs.columns = [c.strip() for c in df_gs.columns]
@@ -409,7 +317,7 @@ def load_config(path: str) -> dict:
             str(u).strip().upper() for u in df_gs["UF"] if pd.notna(u)
         })
     except ValueError:
-        cfg["greenfield_states"] = None  # -> build_model falls back to plants' UFs
+        cfg["greenfield_states"] = None
 
     # ---- Emission factors
     df_ef = pd.read_excel(path, sheet_name="Emission_Factors")
@@ -420,8 +328,49 @@ def load_config(path: str) -> dict:
     cfg["production_target"] = _series(path, "Production_Target", "Production_kt")
     cfg["scrap_supply"]      = _series(path, "Scrap_Supply",      "Scrap_supply_kt")
     cfg["biomass_supply"]    = _series(path, "Biomass_Supply",    "Biomass_supply_GJ")
+    # Max fossil-fuel share of the aggregate energy mix (fraction 0-1).
+    # NEW: fossil fuel share constraint (see CONSTRAINT I in build_model).
+    cfg["fossil_share_max"]  = _series(path, "Fossil_Share_Max",  "Fossil_share_max")
+
+    # LOC ---- Regional scrap: shares + UF->region map.
+    # Two sheets regionalize the scrap constraint (Constraint D). See
+    # Scrap_Regional_Config.xlsx and the methodology note.
+    #   Scrap_Regional_Share: columns Region, Share (fraction; should sum to 1).
+    #   UF_Region:            columns UF, Region.
+    df_share = pd.read_excel(path, sheet_name="Scrap_Regional_Share")
+    df_share.columns = [c.strip() for c in df_share.columns]
+    cfg["scrap_share"] = {
+        str(row["Region"]).strip(): float(row["Share"])
+        for _, row in df_share.iterrows()
+        if pd.notna(row.get("Region")) and pd.notna(row.get("Share"))
+    }
+    _ssum = sum(cfg["scrap_share"].values())
+    if abs(_ssum - 1.0) > 1e-6:
+        print(f"    [warn] Scrap_Regional_Share shares sum to {_ssum:.4f}, not 1.0.")
+
+    df_ufreg = pd.read_excel(path, sheet_name="UF_Region")
+    df_ufreg.columns = [c.strip() for c in df_ufreg.columns]
+    cfg["uf_region"] = {
+        str(row["UF"]).strip().upper(): str(row["Region"]).strip()
+        for _, row in df_ufreg.iterrows()
+        if pd.notna(row.get("UF")) and pd.notna(row.get("Region"))
+    }
+    _missing = set(cfg["uf_region"].values()) - set(cfg["scrap_share"])
+    if _missing:
+        raise ValueError(
+            f"Regions in UF_Region without a Share in Scrap_Regional_Share: "
+            f"{sorted(_missing)}"
+        )
 
     cfg = _sanitize_spaces(cfg)
+
+    # ---- Sanity check: warn if any CCS route in CCS_ROUTES is missing from
+    #      the loaded Routes sheet (keeps the two config sources in sync).
+    missing_ccs = [r for r in CCS_ROUTES if r not in cfg["routes"]]
+    if missing_ccs:
+        print(f"    [warn] CCS_ROUTES contains route(s) not found in the "
+              f"'Routes' sheet: {missing_ccs}. They will be ignored.")
+
     return cfg
 
 
@@ -457,32 +406,29 @@ def load_plants(path: str) -> pd.DataFrame:
     df["Route"] = df["Route"].replace(route_map)
     df["PlantID"] = df["PlantID"].str.replace(" ", "_")
 
-    # ---- UF (state) — NEW, V20_12. Expected to already be filled in the
-    # Excel file (e.g. via the add_uf_to_plants.py spatial-join script).
-    # Prefer "UF" but accept "State" as a fallback, then normalize to the
-    # 2-letter uppercase code.
+    # LOC ---- UF (state): required for the locational layer. Prefer "UF",
+    # accept "State" as fallback, normalize to 2-letter uppercase code.
     if "UF" not in df.columns and "State" in df.columns:
         df = df.rename(columns={"State": "UF"})
 
-    required = ["PlantID", "Route", "Capacity", "Startyear", "Retrofitdate", "UF"]
+    required = ["PlantID", "Route", "Capacity", "Startyear", "Retrofitdate", "UF"]  # LOC: +UF
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(
             f"Plants file is missing required column(s): {missing}. "
             f"Found columns: {df.columns.tolist()}. "
-            f"'UF' must be a 2-letter Brazilian state code per plant "
-            f"(run add_uf_to_plants.py first if it's missing)."
+            f"'UF' must be a 2-letter Brazilian state code per plant."
         )
 
     df["Startyear"]    = df["Startyear"].astype(int)
     df["Retrofitdate"] = df["Retrofitdate"].astype(int)
     df["Capacity"]     = df["Capacity"].astype(float)
-    df["UF"]           = df["UF"].astype(str).str.strip().str.upper()
+    df["UF"]           = df["UF"].astype(str).str.strip().str.upper()  # LOC
 
-    bad_uf = df[~df["UF"].str.match(r"^[A-Z]{2}$")]
+    bad_uf = df[~df["UF"].str.match(r"^[A-Z]{2}$")]  # LOC
     if len(bad_uf) > 0:
         raise ValueError(
-            f"Invalid UF value(s) found in existing_plants.xlsx: "
+            f"Invalid UF value(s) in existing_plants: "
             f"{bad_uf[['PlantID', 'UF']].to_dict('records')}"
         )
 
@@ -495,36 +441,33 @@ def load_plants(path: str) -> pd.DataFrame:
 
 def compute_route_emission_factor(cfg: dict) -> dict:
     """EF_route[r] = Σ_fuel  EI[r,f] · EF[f]   (tCO2 per t of steel)
-    CCS captures CAPTURE_RATE_CCS of the total emissions for BF-BOF-CCS route.
+    CCS captures CAPTURE_RATE_CCS of the total emissions for every route
+    listed in CCS_ROUTES (currently BF-BOF-CCS and DR-NG-CCS).
     """
     ef_route = {}
     for r in cfg["routes"]:
         total = 0.0
         for f in cfg["fuels_by_route"][r]:
             total += cfg["ei"].get((r, f), 0.0) * cfg["ef"].get(f, 0.0)
-        if r == "BF-BOF-CCS":
+        if r in CCS_ROUTES:
             total = total * (1 - cfg["CAPTURE_RATE_CCS"])
         ef_route[r] = total
     return ef_route
 
 
-# Fuels whose price is state-dependent (NEW, V20_12). Any fuel in this set
-# will look up cfg["prices_state"][(fuel, state)] first, falling back to the
-# national cfg["prices"][(fuel, year)] price if the state isn't in the sheet.
-STATE_PRICED_FUELS = {"Eletricidade", "Gas_natural", "Carvao_mineral", "Oleo_diesel", "Hidrogenio"}
+# LOC: fuels whose price is state-dependent. Any fuel here looks up
+# cfg["prices_state"][(fuel, state)] first, falling back to the national
+# cfg["prices"][(fuel, year)] price if the state isn't in the sheet.
+STATE_PRICED_FUELS = {"Eletricidade", "Gas_natural", "Carvao_mineral",
+                      "Oleo_diesel", "Hidrogenio"}
 
 
 def compute_route_fuel_cost_state(cfg: dict, state: str) -> dict:
-    """Fixed-price fuel cost per (route, year), in USD/t of steel, for a
-    plant/slot/greenfield unit located in `state`.
-
-    CHANGED in V20_12: Eletricidade and Gas_natural now use the fixed,
-    state-specific price from Fuel_Prices_State when available (no year
-    variation), falling back to the national Fuel_Prices price if the
-    state has no entry. Charcoal (CHARCOAL_FUEL) is still EXCLUDED here
-    because its price is endogenous (national 3-tier curve, added
-    separately in the objective). All other fuels keep the national
-    fixed price as before.
+    """LOC: fixed-price fuel cost per (route, year), USD/t of steel, for a
+    unit located in `state`. Eletricidade/Gas_natural (and other state-priced
+    fuels) use Fuel_Prices_State when available, else the national price.
+    Charcoal is EXCLUDED (endogenous national 3-tier curve). The ore/pellet
+    state differential (ore_delta) is added per (route, state).
     """
     cost = {}
     for r in cfg["routes"]:
@@ -538,27 +481,14 @@ def compute_route_fuel_cost_state(cfg: dict, state: str) -> dict:
                 else:
                     price = cfg["prices"].get((f, y), 0.0)
                 total += cfg["ei"].get((r, f), 0.0) * price
-# ---------------------------------------------------------------------
-# BLOCK 3 of 3 â€” paste inside compute_route_fuel_cost_state()
-# WHERE: inside the year loop, right after the "for f in ..." fuel loop
-# finishes, and BEFORE the line:      cost[(r, y)] = total
-# (i.e. the new line sits at the same indentation as "total += ..."
-# inside the fuel loop MINUS one level â€” same level as cost[(r, y)])
-# ---------------------------------------------------------------------
-
-            # NEW V20_13: ore/pellet state differential (USD/t of steel),
-            # no year dimension. Zero when route/state absent from sheet.
+            # ore/pellet state differential (USD/t), no year dimension
             total += cfg.get("ore_delta", {}).get((r, state), 0.0)
-            
             cost[(r, y)] = total
     return cost
 
 
 def compute_route_fuel_cost_by_state(cfg: dict, states) -> dict:
-    """Convenience wrapper: {(route, year, state): cost_USD_per_t} for every
-    state in `states`. Used to precompute costs once per state instead of
-    recomputing inside every constraint/objective loop.
-    """
+    """LOC: {(route, year, state): cost_USD_per_t} for every state in `states`."""
     out = {}
     for state in states:
         per_state = compute_route_fuel_cost_state(cfg, state)
@@ -589,6 +519,39 @@ def compute_route_biomass_use(cfg: dict) -> dict:
         total = 0.0
         for f in cfg["fuels_by_route"][r]:
             if f in BIOMASS_FUELS:
+                total += cfg["ei"].get((r, f), 0.0)
+        use[r] = total
+    return use
+
+
+def compute_route_total_energy(cfg: dict) -> dict:
+    """total_energy_use[r] = Σ_fuel_classified  EI[r,f]   (GJ per t of steel).
+
+    Only fuels present in FUEL_CATEGORY are counted (mirrors the reporting
+    layer's energy-mix calculation, which also drops unclassified fuels).
+    Used as the denominator of the fossil-fuel-share constraint (CONSTRAINT I).
+    """
+    use = {}
+    for r in cfg["routes"]:
+        total = 0.0
+        for f in cfg["fuels_by_route"][r]:
+            if f in FUEL_CATEGORY:
+                total += cfg["ei"].get((r, f), 0.0)
+        use[r] = total
+    return use
+
+
+def compute_route_fossil_energy(cfg: dict) -> dict:
+    """fossil_energy_use[r] = Σ_fuel_fossil  EI[r,f]   (GJ per t of steel).
+
+    Only fuels classified as "Fossil" in FUEL_CATEGORY are counted.
+    Used as the numerator of the fossil-fuel-share constraint (CONSTRAINT I).
+    """
+    use = {}
+    for r in cfg["routes"]:
+        total = 0.0
+        for f in cfg["fuels_by_route"][r]:
+            if FUEL_CATEGORY.get(f) == "Fossil":
                 total += cfg["ei"].get((r, f), 0.0)
         use[r] = total
     return use
@@ -670,7 +633,8 @@ SIZE_MENU = {
     "EAF":        [500, 1000, 2000],
     "DR-NG":      [1000, 2000, 3000],
     "DR-H2":      [500, 1500, 2500],
-    "IBT":         [1000, 2000, 3000],
+    "IBT":        [1000, 2000, 3000],
+    "DR-NG-CCS": [1000, 2000, 3000],   # NEW — mirrors DR-NG sizing; adjust if the real plant scale differs
 }
 MAX_PLANTS_PER_SIZE = 5
 
@@ -685,9 +649,9 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     ------------------
     1. production_existing[plantID, year]
     2. production_succ[old_plantID, route, year]
-    3. production_greenfield[route, state, year]        (state dim NEW, V20_12)
+    3. production_greenfield[route, state, year]        (state dim, LOC)
     4. active_succ[old_plantID, route, year]  ∈ {0, 1}
-    5. n_green[route, size, state, year]      ∈ ℤ+       (state dim NEW, V20_12)
+    5. n_green[route, size, state, year]      ∈ ℤ+       (state dim, LOC)
     6. charcoal_delta[year, segment]          ∈ ℝ+   (NEW, V20_8)
 
     Endogenous charcoal price (NEW, V20_8)
@@ -700,15 +664,12 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     Because C is convex and the model minimizes, the solver fills the
     cheaper (lower-slope) segments first — no binaries needed.
 
-    Location dimension (NEW, V20_12)
-    ---------------------------------
-    Existing plants and successor slots inherit a fixed UF (state) from
-    existing_plants.xlsx — no decision is made there, it's just used to look
-    up the right state-specific fuel price and to check route/state
-    availability rules (CCS, GN, H2). Greenfield is the only place with a
-    real location DECISION: production_greenfield / n_green are now indexed
-    over (route, state) pairs restricted to ROUTE_STATE_RESTRICTIONS, so the
-    solver picks both how much AND where to build.
+    Note on CCS (V20_12): any route listed in CCS_ROUTES (currently
+    BF-BOF-CCS and DR-NG-CCS) has its emission factor discounted by
+    CAPTURE_RATE_CCS inside compute_route_emission_factor(). No other
+    model mechanics need to know which routes use CCS — the emission
+    cap, cost accounting, and reporting all key off ef_route, which
+    already reflects the capture.
     """
     m = ConcreteModel()
 
@@ -733,23 +694,19 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     route_size_pairs = [(r, sz) for r in SIZE_MENU for sz in SIZE_MENU[r]]
     m.ROUTE_SIZE = Set(initialize=route_size_pairs, dimen=2)
 
-    # ------------------------------------------------------------------
-    # STATE / LOCATION SETUP  (NEW, V20_12)
-    # ------------------------------------------------------------------
-    # Candidate states for greenfield: from the optional Greenfield_States
-    # config sheet, else default to the unique UFs already present among
-    # existing plants.
+    # LOC ------------------------------------------------------------------
+    # STATE / LOCATION SETUP
+    # ----------------------------------------------------------------------
+    # Candidate greenfield states: from the Greenfield_States sheet, else all
+    # 27 UFs, subject to the per-route geographic restrictions below.
     if cfg.get("greenfield_states"):
         candidate_states = sorted(set(cfg["greenfield_states"]))
     else:
         candidate_states = sorted(ALL_BR_STATES)
-        print(f"    [info] No 'Greenfield_States' sheet found — defaulting "
-              f"greenfield candidate states to ALL {len(candidate_states)} "
-              f"Brazilian UFs.")
+        print(f"    [info] No 'Greenfield_States' sheet — defaulting greenfield "
+              f"candidate states to ALL {len(candidate_states)} Brazilian UFs.")
 
     def allowed_states_for_route(r):
-        """States where route r may be built as NEW capacity (successor or
-        greenfield). Unrestricted routes may go anywhere in candidate_states."""
         restriction = ROUTE_STATE_RESTRICTIONS.get(r)
         if restriction is None:
             return set(candidate_states)
@@ -758,15 +715,11 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     route_allowed_states = {r: allowed_states_for_route(r) for r in cfg["routes"]}
     for r, states_ok in route_allowed_states.items():
         if r in ROUTE_STATE_RESTRICTIONS and not states_ok:
-            print(f"    [warn] Route {r!r} has a geographic restriction but "
-                  f"NO candidate state satisfies it — this route will get "
-                  f"zero NEW capacity. Add the missing state(s) to "
-                  f"'Greenfield_States' if that's not intended.")
+            print(f"    [warn] Route {r!r} has a geographic restriction but NO "
+                  f"candidate state satisfies it — it will get zero NEW capacity.")
 
     m.STATES = Set(initialize=candidate_states)
 
-    # Valid (route, state) pairs for greenfield, and (route, size, state)
-    # triples for the n_green integer variable.
     route_state_pairs = [
         (r, s) for r in cfg["routes"] for s in route_allowed_states[r]
     ]
@@ -778,12 +731,11 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     ]
     m.ROUTE_SIZE_STATE = Set(initialize=route_size_state_triples, dimen=3)
 
-    # Precompute state-specific fuel cost for every candidate state (used by
-    # greenfield) plus every state that actually hosts an existing plant
-    # (used by existing/successor, in case a plant sits outside the
-    # greenfield candidate list).
+    # Precompute state-specific fuel cost for every candidate state plus every
+    # state that actually hosts an existing plant.
     all_relevant_states = set(candidate_states) | set(plants["UF"].unique().tolist())
     cost_route_by_state = compute_route_fuel_cost_by_state(cfg, all_relevant_states)
+    # LOC end --------------------------------------------------------------
 
     slot_info = {}
     for p in plants["PlantID"]:
@@ -798,7 +750,7 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
                 "slot_capacity":     info["Capacity"] * cap_mult,
                 "original_route":    info["Route"],
                 "original_capacity": info["Capacity"],
-                "state":             info["UF"],          # NEW, V20_12
+                "state":             info["UF"],          # LOC
             }
 
     print(f"    {len(slot_info)} successor slots created "
@@ -810,7 +762,7 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
         s = slot_info[p_old]
         return s["start_year"] <= y <= s["end_year"]
 
-    def slot_route_allowed(p_old, r):
+    def slot_route_allowed(p_old, r):  # LOC
         """Whether route r may be installed at slot p_old, given the slot's
         fixed physical state and r's geographic restriction (if any)."""
         restriction = ROUTE_STATE_RESTRICTIONS.get(r)
@@ -821,14 +773,22 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     # ---- Continuous production variables
     m.production_existing   = Var(m.PLANTS, m.YEARS, domain=NonNegativeReals)
     m.production_succ       = Var(m.SLOTS, m.ROUTES, m.YEARS, domain=NonNegativeReals)
-    m.production_greenfield = Var(m.ROUTE_STATE, m.YEARS, domain=NonNegativeReals)
+    m.production_greenfield = Var(m.ROUTE_STATE, m.YEARS, domain=NonNegativeReals)  # LOC: +state
 
     # ---- Greenfield: integer count of plants per (route, size, state), per year
-    m.n_green = Var(m.ROUTE_SIZE_STATE, m.YEARS,
+    m.n_green = Var(m.ROUTE_SIZE_STATE, m.YEARS,  # LOC: +state
                     domain=NonNegativeIntegers, bounds=(0, MAX_PLANTS_PER_SIZE))
 
     # ---- Successor: binary active per (slot, route, year)
     m.active_succ = Var(m.SLOTS, m.ROUTES, m.YEARS, domain=Binary)
+
+    # ---- Vintage auxiliary variables for finite-window CAPEX amortization
+    # (NEW) — "positive part" of the built-in-the-last-L-years capacity, used
+    # instead of a raw telescoping difference because active_succ can be
+    # forced back to 0 when a slot's window closes (see A2.0), which would
+    # otherwise make the raw difference go negative (a bogus CAPEX credit).
+    m.capex_vintage_succ  = Var(m.SLOTS, m.ROUTES, m.YEARS, domain=NonNegativeReals)
+    m.capex_vintage_green = Var(m.ROUTE_SIZE_STATE, m.YEARS, domain=NonNegativeReals)  # LOC: +state
 
     # ---- Charcoal supply tiers (3 cumulative tiers, same every year)
     seg_width, seg_price = build_charcoal_supply_tiers()
@@ -847,25 +807,27 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
         print(f"      tier {s}: {w/1e6:>6.1f} PJ/year at {p:5.2f} USD/GJ")
 
     ef_route       = compute_route_emission_factor(cfg)
-    # NOTE: cost_route is no longer a single national dict — fuel cost now
-    # depends on WHERE a unit is located (cost_route_by_state, built above).
-    # cost_route_by_state[(r, y, state)] gives the USD/t figure to use.
+    # LOC: fuel cost is no longer a single national dict — it depends on WHERE
+    # a unit is located. cost_route_by_state[(r, y, state)] gives the USD/t.
     biom_route     = compute_route_biomass_use(cfg)
     charcoal_route = compute_route_charcoal_use(cfg)     # NEW
+    total_energy_route  = compute_route_total_energy(cfg)   # NEW (fossil-share constraint)
+    fossil_energy_route = compute_route_fossil_energy(cfg)  # NEW (fossil-share constraint)
 
-    def existing_fuel_cost(p, y):
-        r = plant_info[p]["Route"]
-        st = plant_info[p]["UF"]
+    ccs_routes_in_model = sorted(r for r in CCS_ROUTES if r in cfg["routes"])
+    print(f"    CCS routes active in this config: {ccs_routes_in_model}")
+
+    def existing_fuel_cost(p, y):  # LOC
+        r = plant_info[p]["Route"]; st = plant_info[p]["UF"]
         return cost_route_by_state.get((r, y, st), 0.0)
 
-    def succ_fuel_cost(p_old, r, y):
+    def succ_fuel_cost(p_old, r, y):  # LOC
         st = slot_info[p_old]["state"]
         return cost_route_by_state.get((r, y, st), 0.0)
 
     # ---- Helper: total greenfield installed capacity from size-menu variables
-    def green_installed_cap(r, st, y):
-        """Total greenfield installed capacity of route r in state st, in
-        year y (kt). Only defined over valid (r, sz, st) triples."""
+    def green_installed_cap(r, st, y):  # LOC: +state
+        """Total greenfield installed capacity of route r in state st, year y (kt)."""
         return sum(m.n_green[r, sz, st, y] * sz for sz in SIZE_MENU[r]
                    if (r, sz, st) in m.ROUTE_SIZE_STATE)
 
@@ -879,7 +841,7 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
         for p_old in m.SLOTS:
             for r in m.ROUTES:
                 dem += m.production_succ[p_old, r, y] * 1000 * charcoal_route[r]
-        for (r, st) in m.ROUTE_STATE:
+        for (r, st) in m.ROUTE_STATE:  # LOC: +state
             dem += m.production_greenfield[r, st, y] * 1000 * charcoal_route[r]
         return dem
 
@@ -905,13 +867,8 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     # ========================================================================
 
     # A2.0: Force active_succ = 0 outside slot window — for every route
-    # ALSO (NEW, V20_12): force active_succ = 0 for the whole horizon if the
-    # route has a geographic restriction (CCS/GN/H2) that the slot's fixed
-    # physical state does not satisfy.
     def succ_active_window_rule(m, p_old, r, y):
         if not is_slot_active(p_old, y):
-            return m.active_succ[p_old, r, y] == 0
-        if not slot_route_allowed(p_old, r):
             return m.active_succ[p_old, r, y] == 0
         return Constraint.Skip
     m.C_succ_active_window = Constraint(m.SLOTS, m.ROUTES, m.YEARS,
@@ -952,30 +909,68 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     m.C_succ_monotone = Constraint(m.SLOTS, m.ROUTES, m.YEARS,
                                    rule=succ_monotone_rule)
 
+    # A2.5 (NEW): Minimum 25-year (= PLANT_LIFETIME) commitment once built.
+    # The slot window is fixed at [Retrofitdate+1, Retrofitdate+L] (or
+    # truncated by YEAR_END), so the ONLY year that leaves a full L years
+    # before the window closes is the window's very first year
+    # (start_year). Any activation after "cutoff" = end_year - L + 1 would
+    # be forced to shut down before reaching L years when the window
+    # closes — so we forbid NEW activation past that cutoff. Combined
+    # with the existing monotonicity (A2.4) and the hard window-close
+    # (A2.0), this means each slot either (a) is never used at all, or
+    # (b) is built exactly at start_year and runs the full window.
+    # If the window itself is shorter than L (truncated by YEAR_END —
+    # i.e. the original plant retires too close to the horizon's end to
+    # ever host a full 25-year successor), cutoff < start_year and this
+    # constraint forces the slot to stay at 0 for its entire window —
+    # it becomes permanently unusable.
+    def succ_min_duration_rule(m, p_old, r, y):
+        s = slot_info[p_old]
+        if y < s["start_year"] or y > s["end_year"]:
+            return Constraint.Skip
+        cutoff = s["end_year"] - L + 1
+        if y <= cutoff:
+            return Constraint.Skip   # building here still allows a full L-year run
+        prev = m.active_succ[p_old, r, y - 1] if y - 1 >= s["start_year"] else 0
+        return m.active_succ[p_old, r, y] == prev   # no NEW activation past cutoff
+    m.C_succ_min_duration = Constraint(m.SLOTS, m.ROUTES, m.YEARS,
+                                        rule=succ_min_duration_rule)
+
     # ========================================================================
     # CONSTRAINT A3 — Greenfield: size-menu capacity coupling + monotonicity
     # ========================================================================
 
-    # A3.1: Production upper bound = installed capacity, per (route, state)
+    # A3.1: Production upper bound = installed capacity   (LOC: per route+state)
     def cap_green_upper(m, r, st, y):
         return m.production_greenfield[r, st, y] <= green_installed_cap(r, st, y)
     m.C_capacity_green_upper = Constraint(m.ROUTE_STATE, m.YEARS,
                                           rule=cap_green_upper)
 
-    # A3.2: Min utilization on installed capacity, per (route, state)
+    # A3.2: Min utilization on installed capacity   (LOC: per route+state)
     def cap_green_lower(m, r, st, y):
         return (m.production_greenfield[r, st, y]
                 >= min_util * green_installed_cap(r, st, y))
     m.C_capacity_green_lower = Constraint(m.ROUTE_STATE, m.YEARS,
                                           rule=cap_green_lower)
 
-    # A3.3: Monotonicity — can't demolish, per (route, size, state)
+    # A3.3: Monotonicity — can't demolish, per (route, size, state)   (LOC)
     def green_monotone_rule(m, r, sz, st, y):
         if y == year_start:
             return Constraint.Skip
         return m.n_green[r, sz, st, y] >= m.n_green[r, sz, st, y - 1]
     m.C_green_monotone = Constraint(m.ROUTE_SIZE_STATE, m.YEARS,
                                     rule=green_monotone_rule)
+
+    # NOTE: a symmetric "must-run-25-years" cutoff for greenfield builds
+    # (forbidding new n_green after YEAR_END - L + 1) was tested here and
+    # REMOVED — combined with the successor-slot rule above (A2.5) it made
+    # the model infeasible in stress testing: both investment channels
+    # would be frozen after ~2046, leaving no feasible way to keep meeting
+    # a production target that keeps growing all the way to YEAR_END while
+    # also respecting the technology-penetration ramp-up curves. Greenfield
+    # was never subject to the "1-year blip" problem this constraint set
+    # out to fix (it has no forced decommissioning), so leaving it
+    # unconstrained here is safe and doesn't reopen that issue.
 
     # ========================================================================
     # CONSTRAINT B — Production target
@@ -984,7 +979,7 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
         existing = sum(m.production_existing[p, y] for p in m.PLANTS)
         succ     = sum(m.production_succ[p_old, r, y]
                        for p_old in m.SLOTS for r in m.ROUTES)
-        green    = sum(m.production_greenfield[r, st, y] for (r, st) in m.ROUTE_STATE)
+        green    = sum(m.production_greenfield[r, st, y] for (r, st) in m.ROUTE_STATE)  # LOC
         return existing + succ + green == cfg["production_target"][y]
     m.C_production_target = Constraint(m.YEARS, rule=target_rule)
 
@@ -1002,7 +997,7 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
         )
         emis_green = sum(
             m.production_greenfield[r, st, y] * 1000 * ef_route[r]
-            for (r, st) in m.ROUTE_STATE
+            for (r, st) in m.ROUTE_STATE  # LOC
         )
         return emis_existing + emis_succ + emis_green <= cfg["emission_cap"][y]
     m.C_emission_cap = Constraint(m.YEARS, rule=emission_rule)
@@ -1010,21 +1005,33 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     # ========================================================================
     # CONSTRAINT D — Scrap supply
     # ========================================================================
-    def scrap_rule(m, y):
+    # LOC: the single national cap is split into one constraint per macro-
+    # region g. For each region and year y:
+    #   LHS = production * scrap_rate over units whose UF belongs to g
+    #   RHS = national scrap_supply[y] * regional share[g]
+    # UF of each unit: existing -> plant_info[p]["UF"]; successor ->
+    # slot_info[p_old]["state"]; greenfield -> st. Rigid boundary (no flow).
+    m.REGIONS = Set(initialize=sorted(cfg["scrap_share"].keys()))
+
+    def scrap_rule(m, g, y):
         scrap_existing = sum(
             m.production_existing[p, y] * cfg["scrap_rate"][plant_info[p]["Route"]]
             for p in m.PLANTS
+            if cfg["uf_region"][plant_info[p]["UF"]] == g
         )
         scrap_succ = sum(
             m.production_succ[p_old, r, y] * cfg["scrap_rate"][r]
             for p_old in m.SLOTS for r in m.ROUTES
+            if cfg["uf_region"][slot_info[p_old]["state"]] == g
         )
         scrap_green = sum(
             m.production_greenfield[r, st, y] * cfg["scrap_rate"][r]
             for (r, st) in m.ROUTE_STATE
+            if cfg["uf_region"][st] == g
         )
-        return scrap_existing + scrap_succ + scrap_green <= cfg["scrap_supply"][y]
-    m.C_scrap_supply = Constraint(m.YEARS, rule=scrap_rule)
+        return (scrap_existing + scrap_succ + scrap_green
+                <= cfg["scrap_supply"][y] * cfg["scrap_share"][g])
+    m.C_scrap_supply = Constraint(m.REGIONS, m.YEARS, rule=scrap_rule)
 
     # ========================================================================
     # CONSTRAINT E — Biomass supply
@@ -1040,7 +1047,7 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
         )
         biom_green = sum(
             m.production_greenfield[r, st, y] * 1000 * biom_route[r]
-            for (r, st) in m.ROUTE_STATE
+            for (r, st) in m.ROUTE_STATE  # LOC
         )
         return biom_existing + biom_succ + biom_green <= cfg["biomass_supply"][y]
     m.C_biomass_supply = Constraint(m.YEARS, rule=biomass_rule)
@@ -1099,7 +1106,7 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
                 for p_old in m.SLOTS for r in routes_in_group
             ) + sum(
                 m.production_greenfield[r, st, y]
-                for (r, st) in m.ROUTE_STATE if r in routes_in_group
+                for (r, st) in m.ROUTE_STATE if r in routes_in_group  # LOC
             )
             return prod_group <= s * target
         m.C_penetration = Constraint(m.PEN_GROUP_IDX, m.YEARS,
@@ -1107,6 +1114,52 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
 
     # store for the report
     m._pen_groups = pen_groups
+
+    # ========================================================================
+    # CONSTRAINT I (NEW) — Maximum fossil-fuel share of the energy mix
+    # ========================================================================
+    # Caps the aggregate fossil-fuel energy (GJ) — summed over ALL production
+    # (existing + successors + greenfield) — at a fraction of total energy
+    # use (GJ) in that year:
+    #
+    #     fossil_energy[y]  <=  fossil_share_max[y] * total_energy[y]
+    #
+    # "Fossil" and "total" follow the same FUEL_CATEGORY classification used
+    # by the reporting layer (Energy_mix sheet), so the constraint and the
+    # post-hoc indicator are always consistent. fossil_share_max[y] is a
+    # fixed parameter (from the Fossil_Share_Max sheet), so the constraint
+    # is linear — no new binaries needed.
+    def fossil_share_rule(m, y):
+        fossil_existing = sum(
+            m.production_existing[p, y] * 1000 * fossil_energy_route[plant_info[p]["Route"]]
+            for p in m.PLANTS
+        )
+        fossil_succ = sum(
+            m.production_succ[p_old, r, y] * 1000 * fossil_energy_route[r]
+            for p_old in m.SLOTS for r in m.ROUTES
+        )
+        fossil_green = sum(
+            m.production_greenfield[r, st, y] * 1000 * fossil_energy_route[r]
+            for (r, st) in m.ROUTE_STATE  # LOC
+        )
+        fossil_total = fossil_existing + fossil_succ + fossil_green
+
+        total_existing = sum(
+            m.production_existing[p, y] * 1000 * total_energy_route[plant_info[p]["Route"]]
+            for p in m.PLANTS
+        )
+        total_succ = sum(
+            m.production_succ[p_old, r, y] * 1000 * total_energy_route[r]
+            for p_old in m.SLOTS for r in m.ROUTES
+        )
+        total_green = sum(
+            m.production_greenfield[r, st, y] * 1000 * total_energy_route[r]
+            for (r, st) in m.ROUTE_STATE  # LOC
+        )
+        energy_total = total_existing + total_succ + total_green
+
+        return fossil_total <= cfg["fossil_share_max"][y] * energy_total
+    m.C_fossil_share = Constraint(m.YEARS, rule=fossil_share_rule)
 
     # ========================================================================
     # CONSTRAINT G — Ramp-down (max -10% YoY drop within a "platau")
@@ -1139,53 +1192,144 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
                >= ramp_floor * m.production_succ[p_old, r, y - 1]
     m.C_ramp_succ = Constraint(m.SLOTS, m.ROUTES, m.YEARS, rule=ramp_succ_rule)
 
-    # G3: Greenfield — per (route, state). No end-of-life skip.
+    # G3: Greenfield — per (route, state). No end-of-life skip.   (LOC)
     def ramp_green_rule(m, r, st, y):
         if y == year_start:
             return Constraint.Skip
-        return m.production_greenfield[r, st, y] \
-               >= ramp_floor * m.production_greenfield[r, st, y - 1]
+        return (m.production_greenfield[r, st, y]
+                >= ramp_floor * m.production_greenfield[r, st, y - 1])
     m.C_ramp_greenfield = Constraint(m.ROUTE_STATE, m.YEARS, rule=ramp_green_rule)
 
     # ========================================================================
     # OBJECTIVE — minimize discounted total cost
     # ========================================================================
-    capex_annual = {r: cfg["capex"][r] / L for r in cfg["routes"]}
+    # Retrofit (successor slots) is cheaper than greenfield (new plant) —
+    # each pathway is annualized from its own CAPEX column.
+    #
+    # CHANGED: CAPEX is now annualized with the LEVELIZED (capital-recovery-
+    # factor) formula instead of straight-line division. CRF converts a
+    # lump-sum CAPEX into a constant annual payment over L years such that
+    # its present value (discounted at DISCOUNT_RATE) exactly equals the
+    # original CAPEX — the standard approach behind LCOE/LCOS:
+    #
+    #     CRF = r(1+r)^L / [(1+r)^L - 1]        (r = DISCOUNT_RATE, L = PLANT_LIFETIME)
+    #     CAPEX_annual = CAPEX_total * CRF
+    #
+    # This replaces the old CAPEX_total / L straight-line rule. CRF > 1/L
+    # whenever r > 0 (it embeds the cost of capital), so this raises the
+    # annual CAPEX charge relative to the previous version. The L-year
+    # vintage window (capex_vintage_succ / capex_vintage_green, further
+    # below) is unchanged and still amortizes over exactly L years — CRF
+    # is defined for that same L, so the pairing is consistent.
+    r_disc = cfg["DISCOUNT_RATE"]
+    if r_disc == 0:
+        CRF = 1.0 / L   # degenerate case: no cost of capital, falls back to straight-line
+    else:
+        CRF = r_disc * (1 + r_disc) ** L / ((1 + r_disc) ** L - 1)
+
+    capex_annual_retrofit   = {r: cfg["capex_retrofit"][r]   * CRF for r in cfg["routes"]}
+    capex_annual_greenfield = {r: cfg["capex_greenfield"][r] * CRF for r in cfg["routes"]}
+
+    # ------------------------------------------------------------------
+    # CHANGED: the retrofit CAPEX rate only applies when a successor slot
+    # rebuilds the SAME route the original plant had (a genuine "revamp in
+    # place"). Switching to a different route at that site is NOT a
+    # retrofit in the CAPEX sense — the site still needs the full new
+    # process equipment — so it is charged the GREENFIELD rate instead.
+    # Only the land/utilities/logistics saving (implicit in the lower
+    # retrofit column) is retrofit-specific, and that only holds for a
+    # like-for-like rebuild.
+    # ------------------------------------------------------------------
+    def capex_annual_succ(p_old, r):
+        same_route = (r == slot_info[p_old]["original_route"])
+        return capex_annual_retrofit[r] if same_route else capex_annual_greenfield[r]
+
+    # ------------------------------------------------------------------
+    # CHANGED: CAPEX is now amortized over a FINITE window of L years
+    # (L = PLANT_LIFETIME), instead of being charged every year from
+    # construction through the end of the horizon.
+    #
+    # Naively, "capacity built within the last L years" for a monotonic
+    # 0/1 (or integer count) series would be the telescoping difference
+    # value(y) - value(y - L). But active_succ can be forced back to 0
+    # when a slot's window closes (Constraint A2.0) — NOT just when it's
+    # built — so that raw difference can go NEGATIVE (a bogus CAPEX
+    # credit) once a slot's window ends. We instead bound an auxiliary
+    # non-negative variable from below by that difference; since CAPEX
+    # cost is strictly positive and the variable appears nowhere else,
+    # the minimizing solver drives it to exactly max(0, difference) —
+    # the standard LP "positive part" trick. No new binaries needed.
+    # ------------------------------------------------------------------
+    def active_succ_vt(p_old, r, y):
+        """active_succ[p_old, r, y], treated as 0 for y before YEAR_START."""
+        return m.active_succ[p_old, r, y] if y >= year_start else 0
+
+    def n_green_vt(r, sz, st, y):  # LOC: +state
+        """n_green[r, sz, st, y], treated as 0 for y before YEAR_START."""
+        return m.n_green[r, sz, st, y] if y >= year_start else 0
+
+    def capex_vintage_succ_rule(m, p_old, r, y):
+        return (m.capex_vintage_succ[p_old, r, y]
+                >= m.active_succ[p_old, r, y] - active_succ_vt(p_old, r, y - L))
+    m.C_capex_vintage_succ = Constraint(m.SLOTS, m.ROUTES, m.YEARS,
+                                         rule=capex_vintage_succ_rule)
+
+    def capex_vintage_green_rule(m, r, sz, st, y):  # LOC: +state
+        return (m.capex_vintage_green[r, sz, st, y]
+                >= m.n_green[r, sz, st, y] - n_green_vt(r, sz, st, y - L))
+    m.C_capex_vintage_green = Constraint(m.ROUTE_SIZE_STATE, m.YEARS,
+                                          rule=capex_vintage_green_rule)
 
     def annual_cost(y):
         discount = (1 + cfg["DISCOUNT_RATE"]) ** (y - cfg["YEAR_START"])
 
-        # --- EXISTING: OPEX_fixed on capacity, fuel on production
-        #     (fuel cost now looked up per plant's own state — excludes
-        #     charcoal, which is added below via the national curve)
+        # --- EXISTING: CAPEX (CHANGED — see below) + OPEX_fixed on capacity,
+        #     fuel on production (cost_route excludes charcoal — added below)
+        #
+        # CHANGED: existing plants now ALSO carry a CRF-annualized CAPEX
+        # charge, using their own route's CAPEX_retrofit rate (capex_annual_
+        # retrofit, already levelized by CRF above) — no longer treated as
+        # pure sunk cost. Unlike the successor/greenfield vintage logic,
+        # there is NO L-year cutoff here: the charge applies every year the
+        # plant is active, from Startyear through Retrofitdate, however long
+        # that span is (per explicit instruction — this deliberately departs
+        # from the "sunk cost" convention used elsewhere in the objective).
         c_exist_fixed = 0.0
         c_exist_var   = 0.0
         for p in m.PLANTS:
             r = plant_info[p]["Route"]
             cap_p = plant_info[p]["Capacity"]
             if plant_info[p]["Startyear"] <= y <= plant_info[p]["Retrofitdate"]:
-                c_exist_fixed += cap_p * 1000 * cfg["opex_fixed"][r]
-            c_exist_var += m.production_existing[p, y] * 1000 * existing_fuel_cost(p, y)
+                c_exist_fixed += cap_p * 1000 * (cfg["opex_fixed"][r] + capex_annual_retrofit[r])
+            c_exist_var += m.production_existing[p, y] * 1000 * existing_fuel_cost(p, y)  # LOC
 
-        # --- SUCCESSOR: (CAPEX + OPEX_fixed) on installed capacity, fuel on
-        #     production (fuel cost looked up per slot's inherited state)
+        # --- SUCCESSOR: CAPEX amortized over L years (vintage window),
+        #     OPEX_fixed charged every year the slot is active, fuel on production
         c_succ_fixed = 0.0
         c_succ_var   = 0.0
         for p_old in m.SLOTS:
             s_cap = slot_info[p_old]["slot_capacity"]
             for r in m.ROUTES:
-                inst_cap = s_cap * m.active_succ[p_old, r, y]
-                c_succ_fixed += inst_cap * 1000 * (capex_annual[r] + cfg["opex_fixed"][r])
-                c_succ_var   += m.production_succ[p_old, r, y] * 1000 * succ_fuel_cost(p_old, r, y)
+                inst_cap = s_cap * m.active_succ[p_old, r, y]   # for OPEX
+                capex_charge = m.capex_vintage_succ[p_old, r, y] * s_cap
+                c_succ_fixed += (capex_charge * 1000 * capex_annual_succ(p_old, r)
+                                  + inst_cap * 1000 * cfg["opex_fixed"][r])
+                c_succ_var   += m.production_succ[p_old, r, y] * 1000 * succ_fuel_cost(p_old, r, y)  # LOC
 
-        # --- GREENFIELD: (CAPEX + OPEX_fixed) on installed capacity, fuel on
-        #     production (fuel cost looked up per the CHOSEN state — this is
-        #     what makes location a real economic decision, not just a label)
+        # --- GREENFIELD: CAPEX amortized over L years (vintage window),
+        #     OPEX_fixed charged every year the unit is installed, fuel on prod.
+        #     LOC: iterate over (route, state) pairs; capex/opex/fuel by state.
         c_green_fixed = 0.0
         c_green_var   = 0.0
         for (r, st) in m.ROUTE_STATE:
-            inst_cap = green_installed_cap(r, st, y)
-            c_green_fixed += inst_cap * 1000 * (capex_annual[r] + cfg["opex_fixed"][r])
+            inst_cap = green_installed_cap(r, st, y)  # for OPEX
+            capex_charge = 0.0
+            for sz in SIZE_MENU[r]:
+                if (r, sz, st) not in m.ROUTE_SIZE_STATE:
+                    continue
+                capex_charge += (m.capex_vintage_green[r, sz, st, y] * sz
+                                  * 1000 * capex_annual_greenfield[r])
+            c_green_fixed += capex_charge + inst_cap * 1000 * cfg["opex_fixed"][r]
             c_green_var   += (m.production_greenfield[r, st, y] * 1000
                               * cost_route_by_state.get((r, y, st), 0.0))
 
@@ -1207,17 +1351,16 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
         sense=minimize,
     )
 
-    m._ef_route            = ef_route
-    m._cost_route_by_state = cost_route_by_state
-    m._biom_route          = biom_route
-    m._charcoal_route      = charcoal_route
-    m._charcoal_seg        = (seg_width, seg_price)
-    m._plant_info          = plant_info
-    m._slot_info           = slot_info
-    m._L                   = L
-    m._size_menu           = SIZE_MENU
-    m._route_allowed_states = route_allowed_states
-    m._candidate_states     = candidate_states
+    m._ef_route       = ef_route
+    m._cost_route     = cost_route_by_state   # LOC: now state-indexed
+    m._biom_route     = biom_route
+    m._charcoal_route = charcoal_route
+    m._charcoal_seg   = (seg_width, seg_price)
+    m._plant_info     = plant_info
+    m._slot_info      = slot_info
+    m._L              = L
+    m._size_menu      = SIZE_MENU
+    m._ccs_routes     = ccs_routes_in_model
 
     # ========================================================================
     # MODEL SIZE DIAGNOSTIC
@@ -1307,7 +1450,7 @@ def extract_results(m: ConcreteModel, plants: pd.DataFrame, cfg: dict) -> dict:
                 "Type":          "Existing",
                 "Old_plant":     None,
                 "Route":         plant_info[p]["Route"],
-                "State":         plant_info[p]["UF"],
+                "State":         plant_info[p]["UF"],   # LOC
                 "Year":          y,
                 "Production_kt": value(m.production_existing[p, y]),
             })
@@ -1319,11 +1462,11 @@ def extract_results(m: ConcreteModel, plants: pd.DataFrame, cfg: dict) -> dict:
                     "Type":          "Successor",
                     "Old_plant":     p_old,
                     "Route":         r,
-                    "State":         slot_info[p_old]["state"],
+                    "State":         slot_info[p_old]["state"],   # LOC
                     "Year":          y,
                     "Production_kt": value(m.production_succ[p_old, r, y]),
                 })
-    for (r, st) in m.ROUTE_STATE:
+    for (r, st) in m.ROUTE_STATE:   # LOC: +state
         for y in years:
             rows.append({
                 "Source":        f"GREENFIELD__{r}__{st}",
@@ -1385,7 +1528,7 @@ def extract_results(m: ConcreteModel, plants: pd.DataFrame, cfg: dict) -> dict:
         for p_old in slot_info:
             for r in routes:
                 e += value(m.production_succ[p_old, r, y]) * 1000 * ef_route[r]
-        for (r, st) in m.ROUTE_STATE:
+        for (r, st) in m.ROUTE_STATE:   # LOC
             e += value(m.production_greenfield[r, st, y]) * 1000 * ef_route[r]
         emis_year.append({"Year": y, "Emissions_tCO2": e, "Cap_tCO2": cfg["emission_cap"][y]})
     df_emis = pd.DataFrame(emis_year)
@@ -1401,7 +1544,7 @@ def extract_results(m: ConcreteModel, plants: pd.DataFrame, cfg: dict) -> dict:
         for p_old in slot_info:
             for r in routes:
                 demand += value(m.production_succ[p_old, r, y]) * 1000 * charcoal_route[r]
-        for (r, st) in m.ROUTE_STATE:
+        for (r, st) in m.ROUTE_STATE:   # LOC
             demand += value(m.production_greenfield[r, st, y]) * 1000 * charcoal_route[r]
         # Tier-by-tier usage and total cost
         tier_use = [value(m.charcoal_delta[y, s]) for s in range(len(seg_width))]
@@ -1440,7 +1583,7 @@ def extract_results(m: ConcreteModel, plants: pd.DataFrame, cfg: dict) -> dict:
             actual = sum(value(m.production_succ[p_old, r, y])
                          for p_old in slot_info for r in routes_in_group)
             actual += sum(value(m.production_greenfield[r, st, y])
-                          for (r, st) in m.ROUTE_STATE if r in routes_in_group)
+                          for (r, st) in m.ROUTE_STATE if r in routes_in_group)  # LOC
             pen_rows.append({
                 "Group":                   label,
                 "Year":                    y,
@@ -1463,51 +1606,48 @@ def extract_results(m: ConcreteModel, plants: pd.DataFrame, cfg: dict) -> dict:
                 is_active = int(round(value(m.active_succ[p_old, r, y])))
                 active_rows.append({
                     "Type": "Successor", "Unit": f"{p_old}__{r}",
-                    "Slot": p_old, "Route": r, "State": slot_info[p_old]["state"],
-                    "Year": y,
+                    "Slot": p_old, "Route": r, "Year": y,
                     "N_plants": is_active, "Installed_kt": is_active * s_cap,
                 })
-    for (r, st) in m.ROUTE_STATE:
+    for r in routes:
         for y in years:
             n_tot = sum(int(round(value(m.n_green[r, sz, st, y])))
-                        for sz in SIZE_MENU[r] if (r, sz, st) in m.ROUTE_SIZE_STATE)
+                        for (rr, sz, st) in m.ROUTE_SIZE_STATE if rr == r)   # LOC
             cap_tot = sum(int(round(value(m.n_green[r, sz, st, y]))) * sz
-                          for sz in SIZE_MENU[r] if (r, sz, st) in m.ROUTE_SIZE_STATE)
+                          for (rr, sz, st) in m.ROUTE_SIZE_STATE if rr == r)  # LOC
             active_rows.append({
-                "Type": "Greenfield", "Unit": f"GREENFIELD__{r}__{st}",
-                "Slot": None, "Route": r, "State": st, "Year": y,
+                "Type": "Greenfield", "Unit": f"GREENFIELD__{r}",
+                "Slot": None, "Route": r, "Year": y,
                 "N_plants": n_tot, "Installed_kt": cap_tot,
             })
     df_active = pd.DataFrame(active_rows)
 
-    # ---- Size breakdown: which sizes were chosen (greenfield only)
+    # ---- Size breakdown: which sizes were chosen (greenfield only)   (LOC: +state)
     size_rows = []
     for (r, sz, st) in m.ROUTE_SIZE_STATE:
         for y in years:
             n_val = int(round(value(m.n_green[r, sz, st, y])))
             if n_val > 0:
                 size_rows.append({
-                    "Type": "Greenfield", "Slot": None, "Route": r, "State": st,
-                    "Size_kt": sz, "Year": y, "N_plants": n_val,
+                    "Type": "Greenfield", "Slot": None, "Route": r,
+                    "State": st, "Size_kt": sz, "Year": y, "N_plants": n_val,
                     "Capacity_kt": n_val * sz,
                 })
     df_sizes = pd.DataFrame(size_rows)
 
-    # ---- Greenfield location summary: installed capacity by state, by route
-    green_state_rows = []
-    for (r, st) in m.ROUTE_STATE:
+    # LOC ---- Greenfield installed capacity by (route, state, year)
+    gbs_rows = []
+    for (r, sz, st) in m.ROUTE_SIZE_STATE:
         for y in years:
-            cap_kt = sum(int(round(value(m.n_green[r, sz, st, y]))) * sz
-                         for sz in SIZE_MENU[r] if (r, sz, st) in m.ROUTE_SIZE_STATE)
-            if cap_kt > 0:
-                green_state_rows.append({
-                    "Route": r, "State": st, "Year": y,
-                    "Installed_kt": cap_kt,
-                    "Production_kt": value(m.production_greenfield[r, st, y]),
+            n_val = int(round(value(m.n_green[r, sz, st, y])))
+            if n_val > 0:
+                gbs_rows.append({
+                    "Route": r, "State": st, "Size_kt": sz, "Year": y,
+                    "N_plants": n_val, "Installed_kt": n_val * sz,
                 })
-    df_greenfield_by_state = pd.DataFrame(green_state_rows)
-    
-    
+    df_greenfield_by_state = pd.DataFrame(gbs_rows)
+
+
     # ===================================================================
     # ADDITIONAL INDICATORS  (CO2 captured, fuel use, energy mix by category)
     # ===================================================================
@@ -1531,27 +1671,33 @@ def extract_results(m: ConcreteModel, plants: pd.DataFrame, cfg: dict) -> dict:
 
     # df_prod_route already has production by route x year (kt of steel)
     # Reuse it as the production base.
-    prod_route = results_prod_route if False else None  # placeholder; we use df_prod_route below
-    # Note: df_prod_route was built earlier in this function. We reuse it directly.
 
-    # --- Indicator 1: CO2 captured by BF-BOF-CCS (Mt/year) -----------------
-    # Captured = production_CCS [kt] * 1000 * EF_uncaptured [tCO2/t] * capture_rate / (1 - capture_rate)
-    # Easier: captured = production_CCS [kt] * 1000 * (Σ_fuel EI[CCS,f]*EF[f]) * capture_rate
-    ccs_route = "BF-BOF-CCS"
-    ccs_gross_ef = sum(EI.get((ccs_route, f), 0.0) * ef_fuel.get(f, 0.0)
-                       for f in ef_fuel)  # tCO2 per t of steel BEFORE capture
+    # --- Indicator 1: CO2 captured by CCS routes (Mt/year) -----------------
+    # Captured[r,y] = production_r[y] [kt] * 1000 * gross_EF[r] [tCO2/t] * capture_rate
+    # where gross_EF[r] is the emission factor BEFORE capture (Σ_fuel EI[r,f]*EF[f]).
+    # Loops over every route in CCS_ROUTES that is present in this config,
+    # so BF-BOF-CCS and DR-NG-CCS (and any future CCS route added to
+    # CCS_ROUTES) are reported individually plus as a total.
+    ccs_routes_here = sorted(r for r in CCS_ROUTES if r in cfg["routes"])
+    ccs_gross_ef = {
+        r: sum(EI.get((r, f), 0.0) * ef_fuel.get(f, 0.0) for f in ef_fuel)
+        for r in ccs_routes_here
+    }
     rows_capt = []
     for y in years:
-        prod_ccs_kt = float(df_prod_route.loc[ccs_route, y]) if ccs_route in df_prod_route.index else 0.0
-        co2_captured_t = prod_ccs_kt * 1000.0 * ccs_gross_ef * capture_r
-        rows_capt.append({
-            "Year":               y,
-            "Production_CCS_kt":  prod_ccs_kt,
-            "Gross_EF_tCO2_per_t":ccs_gross_ef,
-            "Capture_rate":       capture_r,
-            "CO2_captured_tCO2":  co2_captured_t,
-            "CO2_captured_MtCO2": co2_captured_t / 1e6,
-        })
+        row = {"Year": y}
+        total_captured_t = 0.0
+        for r in ccs_routes_here:
+            prod_kt = float(df_prod_route.loc[r, y]) if r in df_prod_route.index else 0.0
+            captured_t = prod_kt * 1000.0 * ccs_gross_ef[r] * capture_r
+            row[f"Production_{r}_kt"]     = prod_kt
+            row[f"Gross_EF_{r}_tCO2_per_t"] = ccs_gross_ef[r]
+            row[f"CO2_captured_{r}_tCO2"] = captured_t
+            total_captured_t += captured_t
+        row["Capture_rate"]             = capture_r
+        row["CO2_captured_total_tCO2"]  = total_captured_t
+        row["CO2_captured_total_MtCO2"] = total_captured_t / 1e6
+        rows_capt.append(row)
     df_co2_captured = pd.DataFrame(rows_capt)
 
     # --- Indicator 2: Total fuel use by fuel, by year (GJ) -----------------
@@ -1597,9 +1743,10 @@ def extract_results(m: ConcreteModel, plants: pd.DataFrame, cfg: dict) -> dict:
             row["Renewable_share_%"]     = 100 * totals["Renewable"] / grand
         else:
             row["Electricity_share_%"] = row["Fossil_share_%"] = row["Renewable_share_%"] = 0.0
+        row["Fossil_share_max_%"] = cfg["fossil_share_max"].get(y, float("nan")) * 100  # NEW
         cat_rows.append(row)
     df_energy_mix = pd.DataFrame(cat_rows)
-    # ===================================================================    
+    # ===================================================================
 
     return {
         "production_long":    df_prod,
@@ -1612,15 +1759,15 @@ def extract_results(m: ConcreteModel, plants: pd.DataFrame, cfg: dict) -> dict:
         "penetration":        df_penetration,
         "active_status":      df_active,
         "size_breakdown":     df_sizes,
-        "co2_captured":       df_co2_captured,   # NEW
+        "greenfield_by_state": df_greenfield_by_state,   # LOC
+        "co2_captured":       df_co2_captured,   # NEW (multi-CCS-route)
         "fuel_use_PJ":        df_fuel_use_PJ,    # NEW
         "energy_mix":         df_energy_mix,     # NEW
-        "greenfield_by_state": df_greenfield_by_state,  # NEW, V20_12
     }
 
 
 def save_results(results: dict, output_dir: str):
-    out = os.path.join(output_dir, "resultados_modelo_V20_13.xlsx")
+    out = os.path.join(output_dir, "resultados_modelo_V20_11.xlsx")
     with pd.ExcelWriter(out, engine="openpyxl") as w:
         results["production_long"].to_excel(w,    sheet_name="Production_long",    index=False)
         results["production_route"].to_excel(w,   sheet_name="Production_route")
@@ -1633,10 +1780,11 @@ def save_results(results: dict, output_dir: str):
             results["penetration"].to_excel(w,    sheet_name="Penetration",        index=False)
         results["active_status"].to_excel(w,      sheet_name="Active_status",      index=False)
         results["size_breakdown"].to_excel(w,     sheet_name="Size_breakdown",     index=False)
+        if not results.get("greenfield_by_state", pd.DataFrame()).empty:   # LOC
+            results["greenfield_by_state"].to_excel(w, sheet_name="Greenfield_by_state", index=False)
         results["co2_captured"].to_excel(w,       sheet_name="CO2_captured",       index=False)
         results["fuel_use_PJ"].to_excel(w,        sheet_name="Fuel_use_PJ")
         results["energy_mix"].to_excel(w,         sheet_name="Energy_mix",         index=False)
-        results["greenfield_by_state"].to_excel(w, sheet_name="Greenfield_by_state", index=False)  # NEW, V20_12
     print(f"Results saved: {out}")
     return out
 
@@ -1705,14 +1853,23 @@ def plot_all(results: dict, cfg: dict, output_dir: str):
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "production_share.png"), dpi=150)
     plt.show()
-    
-    # ---- Plot 6: CO2 captured by BF-BOF-CCS
+
+    # ---- Plot 6: CO2 captured, by CCS route (stacked bars)
     df_capt = results["co2_captured"]
+    ccs_cols = [c for c in df_capt.columns
+                if c.startswith("CO2_captured_") and c.endswith("_tCO2")
+                and c != "CO2_captured_total_tCO2"]
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.bar(df_capt["Year"], df_capt["CO2_captured_MtCO2"], color="#1F4E78")
-    ax.set_title("CO2 Captured by BF-BOF-CCS")
+    bottom = np.zeros(len(df_capt))
+    for col in ccs_cols:
+        route_name = col[len("CO2_captured_"):-len("_tCO2")]
+        vals_mt = df_capt[col].to_numpy() / 1e6
+        ax.bar(df_capt["Year"], vals_mt, bottom=bottom,
+               color=ROUTE_COLORS.get(route_name, "#999999"), label=route_name)
+        bottom += vals_mt
+    ax.set_title("CO2 Captured by CCS Route")
     ax.set_xlabel("Year"); ax.set_ylabel("CO2 captured (Mt CO2/year)")
-    ax.grid(True, alpha=0.3, axis="y")
+    ax.legend(); ax.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "co2_captured.png"), dpi=150)
     plt.show()
@@ -1734,13 +1891,15 @@ def plot_all(results: dict, cfg: dict, output_dir: str):
     plt.show()
 
     # ---- Plot 8: Energy mix by category (% share, stacked area)
-    df_mix = results["energy_mix"].set_index("Year")[
-        ["Electricity_share_%", "Fossil_share_%", "Renewable_share_%"]
-    ]
+    df_mix_full = results["energy_mix"].set_index("Year")
+    df_mix = df_mix_full[["Electricity_share_%", "Fossil_share_%", "Renewable_share_%"]]
     df_mix.columns = ["Electricity", "Fossil", "Renewable"]
     fig, ax = plt.subplots(figsize=(12, 6))
     df_mix.plot(kind="area", stacked=True, ax=ax, alpha=0.8, linewidth=0,
                 color=["#F2B705", "#5A5A5A", "#2E7D32"])
+    if "Fossil_share_max_%" in df_mix_full.columns:  # NEW — show the cap
+        ax.plot(df_mix_full.index, df_mix_full["Fossil_share_max_%"],
+                "r--", linewidth=2, label="Fossil share cap")
     ax.set_title("Energy Mix by Category (% of total energy use)")
     ax.set_xlabel("Year"); ax.set_ylabel("Share (%)")
     ax.set_ylim(0, 100)
@@ -1757,7 +1916,6 @@ def plot_all(results: dict, cfg: dict, output_dir: str):
     # left: tier usage stacked over time (PJ/year)
     tier_cols = [c for c in df_ch.columns if c.startswith("Tier") and c.endswith("_PJ")]
     df_tiers = df_ch.set_index("Year")[tier_cols]
-    df_tiers = df_tiers.clip(lower=0.0)  # remove solver noise (~1e-15) in unused charcoal tiers
     df_tiers.plot(kind="area", stacked=True, ax=ax1, alpha=0.8)
     ax1.set_title("Charcoal demand by tier")
     ax1.set_xlabel("Year"); ax1.set_ylabel("Demand (PJ/year)")
@@ -1798,23 +1956,6 @@ def plot_all(results: dict, cfg: dict, output_dir: str):
         fig.savefig(os.path.join(output_dir, "penetration.png"), dpi=150)
         plt.show()
 
-    # ---- Plot 9: Greenfield installed capacity by STATE (NEW, V20_12)
-    df_gs = results["greenfield_by_state"]
-    if not df_gs.empty:
-        df_state_year = (
-            df_gs.groupby(["State", "Year"])["Installed_kt"].max()
-                 .unstack("Year").fillna(0.0)
-        )
-        fig, ax = plt.subplots(figsize=(12, 6))
-        df_state_year.T.plot(kind="area", stacked=True, ax=ax, alpha=0.8, linewidth=0)
-        ax.set_title("Greenfield Installed Capacity by State")
-        ax.set_xlabel("Year"); ax.set_ylabel("Installed capacity (kt)")
-        ax.legend(title="State", bbox_to_anchor=(1.05, 1), loc="upper left")
-        ax.grid(True, alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(os.path.join(output_dir, "greenfield_by_state.png"), dpi=150)
-        plt.show()
-
 
 # ============================================================================
 # 7. REFERENCE SCENARIO (REF / BAU) — no optimisation, frozen 2023 route mix
@@ -1840,7 +1981,7 @@ def run_reference_scenario(cfg: dict, output_dir: str):
     # (so that diverging emissions trajectories reflect the policy effect, not
     # a different base-year allocation). The shares are read from the
     # Production_route sheet of an MIT scenario output file.
-    MIT_BASELINE_FILE = os.path.join(output_dir, "resultados_modelo_V20_12.xlsx")
+    MIT_BASELINE_FILE = os.path.join(output_dir, "resultados_modelo_V20_11.xlsx")
     if not os.path.exists(MIT_BASELINE_FILE):
         raise RuntimeError(
             f"Reference scenario: cannot find {MIT_BASELINE_FILE}. "
@@ -1886,11 +2027,12 @@ def run_reference_scenario(cfg: dict, output_dir: str):
 
     # --- (3) Emissions per route per year ---------------------------------
     # ef_route[r] = sum_f EI[r,f] * ef_fuel[f]
-    # For BF-BOF-CCS, apply capture (1 - rate). In REF, CCS share is zero
-    # anyway, so this only matters for completeness.
+    # For any route in CCS_ROUTES, apply capture (1 - rate). In REF, CCS
+    # share is typically zero anyway, but this is kept for completeness in
+    # case the base year already has some CCS production.
     def ef_route(r):
         e = sum(EI.get((r, f), 0.0) * ef_fuel.get(f, 0.0) for f in ef_fuel)
-        if r == "BF-BOF-CCS":
+        if r in CCS_ROUTES:
             e *= (1 - capture_r)
         return e
 
@@ -1954,21 +2096,30 @@ def run_reference_scenario(cfg: dict, output_dir: str):
             row["Renewable_share_%"]   = 100 * totals["Renewable"] / grand
         else:
             row["Electricity_share_%"] = row["Fossil_share_%"] = row["Renewable_share_%"] = 0.0
+        row["Fossil_share_max_%"] = cfg["fossil_share_max"].get(y, float("nan")) * 100  # NEW
         cat_rows.append(row)
     df_energy_mix = pd.DataFrame(cat_rows)
 
-    # --- (6) CO2 captured (zero in REF, but kept for indicator parity) ----
+    # --- (6) CO2 captured (typically zero in REF, kept for indicator parity,
+    #         reported per CCS route, same structure as the MIT scenario) ---
+    ccs_routes_here = sorted(r for r in CCS_ROUTES if r in routes)
+    ccs_gross_ef = {
+        r: sum(EI.get((r, f), 0.0) * ef_fuel.get(f, 0.0) for f in ef_fuel)
+        for r in ccs_routes_here
+    }
     rows_capt = []
-    ccs_route = "BF-BOF-CCS"
-    ccs_gross_ef = sum(EI.get((ccs_route, f), 0.0) * ef_fuel.get(f, 0.0)
-                       for f in ef_fuel)
     for y in years:
-        prod_ccs_kt = float(df_prod_route.loc[ccs_route, y]) if ccs_route in df_prod_route.index else 0.0
-        co2_captured_t = prod_ccs_kt * 1000.0 * ccs_gross_ef * capture_r
-        rows_capt.append({"Year": y,
-                          "Production_CCS_kt":   prod_ccs_kt,
-                          "CO2_captured_tCO2":   co2_captured_t,
-                          "CO2_captured_MtCO2":  co2_captured_t / 1e6})
+        row = {"Year": y}
+        total_captured_t = 0.0
+        for r in ccs_routes_here:
+            prod_kt = float(df_prod_route.loc[r, y]) if r in df_prod_route.index else 0.0
+            captured_t = prod_kt * 1000.0 * ccs_gross_ef[r] * capture_r
+            row[f"Production_{r}_kt"]     = prod_kt
+            row[f"CO2_captured_{r}_tCO2"] = captured_t
+            total_captured_t += captured_t
+        row["CO2_captured_total_tCO2"]  = total_captured_t
+        row["CO2_captured_total_MtCO2"] = total_captured_t / 1e6
+        rows_capt.append(row)
     df_co2_captured = pd.DataFrame(rows_capt)
 
     # --- (7) Route shares table (constant by definition) -------------------
@@ -2030,13 +2181,15 @@ def run_reference_scenario(cfg: dict, output_dir: str):
     plt.close(fig)
 
     # Energy mix
-    df_mix = df_energy_mix.set_index("Year")[
-        ["Electricity_share_%", "Fossil_share_%", "Renewable_share_%"]
-    ]
+    df_mix_full = df_energy_mix.set_index("Year")
+    df_mix = df_mix_full[["Electricity_share_%", "Fossil_share_%", "Renewable_share_%"]]
     df_mix.columns = ["Electricity", "Fossil", "Renewable"]
     fig, ax = plt.subplots(figsize=(12, 6))
     df_mix.plot(kind="area", stacked=True, ax=ax, alpha=0.8, linewidth=0,
                 color=["#F2B705", "#5A5A5A", "#2E7D32"])
+    if "Fossil_share_max_%" in df_mix_full.columns:  # NEW — show the cap
+        ax.plot(df_mix_full.index, df_mix_full["Fossil_share_max_%"],
+                "r--", linewidth=2, label="Fossil share cap")
     ax.set_title("REF scenario — Energy Mix by Category")
     ax.set_xlabel("Year"); ax.set_ylabel("Share (%)")
     ax.set_ylim(0, 100)
@@ -2061,125 +2214,128 @@ def run_reference_scenario(cfg: dict, output_dir: str):
 # 8. MAIN
 #==============================================================================
 
-def main():
+def main(config_file: str = None, output_dir: str = None):
+    """Run one full scenario: load config+plants, build, solve, extract,
+    save results and plots, then run the REF scenario — all into
+    `output_dir`. Defaults to the module-level CONFIG_FILE/OUTPUT_DIR for
+    backward compatibility (single-scenario runs)."""
+    config_file = config_file or CONFIG_FILE
+    output_dir  = output_dir or OUTPUT_DIR
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\n{'='*78}\n>>> SCENARIO: {os.path.basename(config_file)}\n>>> Output:   {output_dir}\n{'='*78}")
+
     print(">>> Loading config...")
-    cfg = load_config(CONFIG_FILE)
+    cfg = load_config(config_file)
     print(f"    Years: {cfg['YEAR_START']}–{cfg['YEAR_END']}")
     print(f"    Routes: {cfg['routes']}")
+    print("    CAPEX by route (USD/t) — retrofit vs greenfield:")
+    for r in cfg["routes"]:
+        cr = cfg["capex_retrofit"][r]
+        cg = cfg["capex_greenfield"][r]
+        print(f"      {r:<14} retrofit={cr:>6.0f}   greenfield={cg:>6.0f}")
     print(f"    Max ramp-down: {cfg['MAX_RAMP_DOWN']*100:.0f}%/year (skipped in last active year)")
     print(f"    Charcoal supply: 3 tiers, "
           f"{CHARCOAL_TIER_WIDTH_PJ} PJ at {CHARCOAL_TIER_PRICE} USD/GJ "
           f"({CHARCOAL_ABOVE_CAP} above the top tier)")
+    ccs_in_routes = [r for r in CCS_ROUTES if r in cfg["routes"]]
+    print(f"    CCS routes: {ccs_in_routes} "
+          f"(capture rate: {cfg['CAPTURE_RATE_CCS']*100:.0f}%)")
     if PENETRATION_LIMITS:
         print(f"    Penetration limits (smoothstep sigmoid):")
         for k, v in PENETRATION_LIMITS.items():
             print(f"      {k}: 0 in {v['start']} -> 1 in {v['end']}")
-    print(f"    Geographic restrictions on NEW capacity (successor/greenfield):")
-    print(f"      CCS (BF-BOF-CCS): {sorted(CCS_ALLOWED_STATES)}")
-    print(f"      Natural gas (DR-NG): {sorted(GN_ALLOWED_STATES)}")
-    print(f"      Green H2 (DR-H2):   {sorted(H2_ALLOWED_STATES)}")
-    if cfg.get("greenfield_states"):
-        print(f"    Greenfield candidate states (from config): {cfg['greenfield_states']}")
-    else:
-        print(f"    Greenfield candidate states: defaulting to existing plants' UFs "
-              f"(no 'Greenfield_States' sheet found).")
+    fsm = cfg["fossil_share_max"]
+    print(f"    Fossil share cap: {fsm[cfg['YEAR_START']]*100:.0f}% in {cfg['YEAR_START']} "
+          f"-> {fsm[cfg['YEAR_END']]*100:.0f}% in {cfg['YEAR_END']}")
 
     print(">>> Loading plants...")
-    plants = load_plants(PLANTS_FILE)
+    plants = load_plants(PLANTS_FILE)   # same fleet for every scenario — only the config varies
     print(f"    {len(plants)} plants loaded.")
-    print(f"    States present: {sorted(plants['UF'].unique().tolist())}")
 
     print(">>> Building model...")
     m = build_model(plants, cfg)
 
     print(">>> Solving...")
-    log_path = os.path.join(OUTPUT_DIR, "optimization_log.txt")
+    log_path = os.path.join(output_dir, "optimization_log.txt")
     info = solve_model(m, log_path)
 
     if not info["converged"]:
         print(f"!!! Did NOT converge: {info['term_cond']}")
         print(f"    See log: {log_path}")
-        return
+        return False
 
     print(f">>> Optimal cost (NPV USD): {info['obj_val']:,.0f}")
     print(">>> Extracting results...")
     results = extract_results(m, plants, cfg)
-    save_results(results, OUTPUT_DIR)
-    plot_all(results, cfg, OUTPUT_DIR)
-    print(">>> Done.")
+    save_results(results, output_dir)
+    plot_all(results, cfg, output_dir)
+    plot_production_by_state(results, output_dir)   # LOC
+
+    print(">>> Running REFERENCE scenario...")
+    cfg_ref = load_config(config_file)
+    cfg_ref["plants"] = plants
+    run_reference_scenario(cfg_ref, output_dir)
+
+    print(f">>> Done: {os.path.basename(config_file)}")
+    return True
 
 
-if __name__ == "__main__":
-    main()
-    
-    
-
-# ============================================================================
-# PLOT 10 — TOTAL PRODUCTION BY STATE (full fleet)                      [NEW]
-# ============================================================================
-# Mirrors Plot 9 (greenfield_by_state), but covers every unit in the fleet:
-# Existing, Successor and Greenfield.
-#
-# Standalone: changes nothing in the model. Run the model once, then run this
-# cell. It reads the Production_long sheet that save_results() already writes,
-# so it does not re-solve anything.
-#
-#   plot_production_by_state()                      # reads from OUTPUT_DIR
-#   plot_production_by_state(results=results)       # if you do have `results`
-# ----------------------------------------------------------------------------
- 
-def plot_production_by_state(results: dict = None,
-                             output_dir: str = None,
-                             min_kt: float = 1.0,
-                             save_table: bool = True):
+def scenario_label(path: str) -> str:
+    """Derive a short, filesystem-safe folder name from a config filename.
+    Strips the common 'Input_Model_Config_12_horizonte_2070' prefix (and
+    any leading numeric upload-id prefix) and keeps whatever scenario tag
+    remains, e.g. '..._MIT_V2_-H2_27_GN_15_EL_27.xlsx' -> 'MIT_V2_-H2_27_GN_15_EL_27'.
+    Falls back to the full stem if nothing recognizable is found.
     """
-    Single stacked-area chart: steel production over the horizon, one colour
-    per state.
- 
-    results   : optional. If None, reads Production_long from
-                <output_dir>/resultados_modelo_V20_12.xlsx.
-    output_dir: defaults to the global OUTPUT_DIR.
-    min_kt    : states whose peak annual production never reaches this are
-                dropped, so the legend does not fill with empty states.
+    stem = os.path.splitext(os.path.basename(path))[0]
+    stem = re.sub(r"^\d+_", "", stem)  # drop leading upload-id timestamp, if any
+    marker = "Input_Model_Config_12_horizonte_2070"
+    if marker in stem:
+        tag = stem.split(marker, 1)[1].lstrip("_")
+        return tag if tag else "base"
+    return stem
+
+
+def plot_production_by_state(results: dict = None, output_dir: str = None,
+                            min_kt: float = 1.0, save_table: bool = True):
+    """LOC: stacked-area plot of total steel production by UF (existing +
+    successor + greenfield). Prefers in-memory `results`; falls back to the
+    Production_long sheet of a saved workbook in output_dir if given.
     """
     import os
     import pandas as pd
     import matplotlib.pyplot as plt
- 
+
     if output_dir is None:
         output_dir = OUTPUT_DIR
- 
+
     if results is not None:
         df = results["production_long"].copy()
     else:
-        xls = os.path.join(output_dir, "resultados_modelo_V20_12.xlsx")
-        if not os.path.exists(xls):
-            print(f"[plot_production_by_state] Not found: {xls}\n"
-                  f"    Run the model first, or pass results=results.")
-            return None
-        df = pd.read_excel(xls, sheet_name="Production_long")
-        print(f"[plot_production_by_state] Read Production_long from {xls}")
- 
+        print("[plot_production_by_state] No results passed — call "
+              "plot_production_by_state(results=results) after a run.")
+        return None
+
+    if "State" not in df.columns:
+        print("[plot_production_by_state] Production_long has no 'State' column.")
+        return None
+
     df = df[df["Production_kt"] > 1e-6]
     if df.empty:
         print("[plot_production_by_state] No production found — nothing to plot.")
         return None
- 
+
     df_state_year = (df.groupby(["State", "Year"])["Production_kt"].sum()
                        .unstack("Year").fillna(0.0))
- 
-    # Drop negligible states; largest state at the bottom of the stack
+
     peak = df_state_year.max(axis=1)
     keep = peak[peak >= min_kt].sort_values(ascending=False).index
-    dropped = [s for s in df_state_year.index if s not in keep]
     if len(keep) == 0:
         print(f"[plot_production_by_state] No state reaches {min_kt} kt.")
         return None
-    if dropped:
-        print(f"[plot_production_by_state] States below {min_kt} kt omitted: "
-              f"{', '.join(sorted(map(str, dropped)))}")
     df_state_year = df_state_year.loc[keep]
- 
+
     fig, ax = plt.subplots(figsize=(12, 6))
     df_state_year.T.plot(kind="area", stacked=True, ax=ax, alpha=0.8, linewidth=0)
     ax.set_title("Steel Production by State — full fleet "
@@ -2193,23 +2349,48 @@ def plot_production_by_state(results: dict = None,
     fig.tight_layout()
     path = os.path.join(output_dir, "production_by_state.png")
     fig.savefig(path, dpi=150)
-    plt.show()
+    plt.close(fig)
     print(f"[plot_production_by_state] Saved: {path}")
- 
+
     if save_table:
         out = os.path.join(output_dir, "production_by_state.xlsx")
         with pd.ExcelWriter(out, engine="openpyxl") as w:
             df_state_year.to_excel(w, sheet_name="Production_by_state")
         print(f"[plot_production_by_state] Saved: {out}")
- 
+
     return df_state_year
- 
- 
-# Run it:
-plot_production_by_state()
 
-V #%% Reference scenario (no optimisation — runs independently)
-cfg_ref = load_config(CONFIG_FILE)
-cfg_ref["plants"] = load_plants(PLANTS_FILE)
-run_reference_scenario(cfg_ref, OUTPUT_DIR)
 
+if __name__ == "__main__":
+    # ==========================================================================
+    # BATCH MODE: run every *.xlsx config file found in INPUT_DIR (falls back
+    # to the single CONFIG_FILE above if INPUT_DIR doesn't exist / is empty).
+    # Each config gets its own output subfolder under OUTPUT_DIR, named after
+    # its scenario tag (see scenario_label). Uses the SAME plants file
+    # (PLANTS_FILE) for every run — only the config workbook varies.
+    # ==========================================================================
+    import glob
+    import re
+
+    INPUT_DIR = os.path.join(BASE_DIR, "input", "batch")  # >>> put all scenario .xlsx files here <<<
+    config_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.xlsx")))
+
+    if not config_files:
+        print(f">>> No .xlsx files found in {INPUT_DIR} — running single CONFIG_FILE instead.")
+        main()
+    else:
+        print(f">>> BATCH MODE: {len(config_files)} scenario file(s) found in {INPUT_DIR}")
+        summary = []
+        for cf in config_files:
+            label = scenario_label(cf)
+            out_dir = os.path.join(OUTPUT_DIR, label)
+            try:
+                ok = main(config_file=cf, output_dir=out_dir)
+                summary.append((label, "OK" if ok else "DID NOT CONVERGE"))
+            except Exception as e:
+                print(f"!!! ERROR running {label}: {e}")
+                summary.append((label, f"ERROR: {e}"))
+
+        print(f"\n{'='*78}\n>>> BATCH SUMMARY\n{'='*78}")
+        for label, status in summary:
+            print(f"  {label:<40} {status}")

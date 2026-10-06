@@ -1,0 +1,28 @@
+STEEL OPTIMIZATION MODEL — RUN LOG
+============================================================
+
+Solver status:           ok
+Termination condition:   optimal
+Converged to optimal:    True
+Objective value (USD):   163,746,816,602
+
+Full solver report:
+------------------------------------------------------------
+
+Problem: 
+- Lower bound: -inf
+  Upper bound: inf
+  Number of objectives: 1
+  Number of constraints: 45232
+  Number of variables: 33600
+  Sense: unknown
+Solver: 
+- Status: ok
+  Message: HiGHS 1.11.0\x3a optimal solution; objective 163746816602.186; 23694 simplex iterations; 1 branching nodes; absmipgap=7.61998e+08, relmipgap=0.00465351
+  Termination condition: optimal
+  Id: 0
+  Error rc: 0
+  Time: 1561.767119884491
+Solution: 
+- number of solutions: 0
+  number of solutions displayed: 0

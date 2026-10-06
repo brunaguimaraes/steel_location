@@ -57,7 +57,7 @@ BASE_DIR = r"C:/Users/Bruna/OneDrive/DOUTORADO/0.TESE/modelagem/steel_location_m
 
 
 PLANTS_FILE  = os.path.join(BASE_DIR, "existing_plants.xlsx")
-CONFIG_FILE  = os.path.join(BASE_DIR, "Model_Config_14.xlsx")
+CONFIG_FILE  = os.path.join(BASE_DIR, "Model_Config_15.xlsx")
 OUTPUT_DIR   = os.path.join(BASE_DIR, "resultados")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -420,6 +420,36 @@ def load_config(path: str) -> dict:
     cfg["production_target"] = _series(path, "Production_Target", "Production_kt")
     cfg["scrap_supply"]      = _series(path, "Scrap_Supply",      "Scrap_supply_kt")
     cfg["biomass_supply"]    = _series(path, "Biomass_Supply",    "Biomass_supply_GJ")
+
+    # ---- Regional scrap: shares + UF->region map (NEW, V20_14)
+    # Two sheets regionalize the scrap constraint (Constraint D). See
+    # Scrap_Regional_Config.xlsx and the methodology note.
+    #   Scrap_Regional_Share: columns Region, Share (fraction; should sum to 1).
+    #   UF_Region:            columns UF, Region.
+    df_share = pd.read_excel(path, sheet_name="Scrap_Regional_Share")
+    df_share.columns = [c.strip() for c in df_share.columns]
+    cfg["scrap_share"] = {
+        str(row["Region"]).strip(): float(row["Share"])
+        for _, row in df_share.iterrows()
+        if pd.notna(row.get("Region")) and pd.notna(row.get("Share"))
+    }
+    _ssum = sum(cfg["scrap_share"].values())
+    if abs(_ssum - 1.0) > 1e-6:
+        print(f"    [warn] Scrap_Regional_Share shares sum to {_ssum:.4f}, not 1.0.")
+
+    df_ufreg = pd.read_excel(path, sheet_name="UF_Region")
+    df_ufreg.columns = [c.strip() for c in df_ufreg.columns]
+    cfg["uf_region"] = {
+        str(row["UF"]).strip().upper(): str(row["Region"]).strip()
+        for _, row in df_ufreg.iterrows()
+        if pd.notna(row.get("UF")) and pd.notna(row.get("Region"))
+    }
+    _missing = set(cfg["uf_region"].values()) - set(cfg["scrap_share"])
+    if _missing:
+        raise ValueError(
+            f"Regions in UF_Region without a Share in Scrap_Regional_Share: "
+            f"{sorted(_missing)}"
+        )
 
     cfg = _sanitize_spaces(cfg)
     return cfg
@@ -1010,21 +1040,36 @@ def build_model(plants: pd.DataFrame, cfg: dict) -> ConcreteModel:
     # ========================================================================
     # CONSTRAINT D — Scrap supply
     # ========================================================================
-    def scrap_rule(m, y):
+    # Regionalized scrap cap (NEW, V20_14): the single national cap is split
+    # into one constraint per macro-region g. For each region and year y:
+    #   LHS = production * scrap_rate over units whose UF belongs to g
+    #   RHS = national scrap_supply[y] * regional share[g]
+    # Only EAF has scrap_rate != 0, so the LHS reduces to regional EAF output.
+    # Rigid boundary: no inter-regional scrap flow. UF of each unit:
+    #   existing  -> plant_info[p]["UF"]
+    #   successor -> slot_info[p_old]["state"]
+    #   greenfield-> st  (the state index of ROUTE_STATE)
+    m.REGIONS = Set(initialize=sorted(cfg["scrap_share"].keys()))
+
+    def scrap_rule(m, g, y):
         scrap_existing = sum(
             m.production_existing[p, y] * cfg["scrap_rate"][plant_info[p]["Route"]]
             for p in m.PLANTS
+            if cfg["uf_region"][plant_info[p]["UF"]] == g
         )
         scrap_succ = sum(
             m.production_succ[p_old, r, y] * cfg["scrap_rate"][r]
             for p_old in m.SLOTS for r in m.ROUTES
+            if cfg["uf_region"][slot_info[p_old]["state"]] == g
         )
         scrap_green = sum(
             m.production_greenfield[r, st, y] * cfg["scrap_rate"][r]
             for (r, st) in m.ROUTE_STATE
+            if cfg["uf_region"][st] == g
         )
-        return scrap_existing + scrap_succ + scrap_green <= cfg["scrap_supply"][y]
-    m.C_scrap_supply = Constraint(m.YEARS, rule=scrap_rule)
+        return (scrap_existing + scrap_succ + scrap_green
+                <= cfg["scrap_supply"][y] * cfg["scrap_share"][g])
+    m.C_scrap_supply = Constraint(m.REGIONS, m.YEARS, rule=scrap_rule)
 
     # ========================================================================
     # CONSTRAINT E — Biomass supply
@@ -2152,7 +2197,7 @@ def plot_production_by_state(results: dict = None,
     if results is not None:
         df = results["production_long"].copy()
     else:
-        xls = os.path.join(output_dir, "resultados_modelo_V20_12.xlsx")
+        xls = os.path.join(output_dir, "resultados_modelo_V20_13.xlsx")
         if not os.path.exists(xls):
             print(f"[plot_production_by_state] Not found: {xls}\n"
                   f"    Run the model first, or pass results=results.")
@@ -2208,7 +2253,7 @@ def plot_production_by_state(results: dict = None,
 # Run it:
 plot_production_by_state()
 
-V #%% Reference scenario (no optimisation — runs independently)
+#%% Reference scenario (no optimisation — runs independently)
 cfg_ref = load_config(CONFIG_FILE)
 cfg_ref["plants"] = load_plants(PLANTS_FILE)
 run_reference_scenario(cfg_ref, OUTPUT_DIR)
